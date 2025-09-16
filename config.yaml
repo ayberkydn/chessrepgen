@@ -1,0 +1,39 @@
+# Chess Repertoire Generator Configuration
+
+# Side to generate repertoire for (white or black)
+side: white
+
+# Initial moves to start from (in SAN notation)
+# Can be multiple starting positions
+initial_moves:
+  - e4
+  - d4
+  - Nf3
+
+# Time controls to consider for Lichess games
+time_control:
+  - rapid
+  - blitz
+
+# Maximum depth of repertoire tree
+depth: 35
+
+# Rating range for Lichess games
+min_rating: 1600
+max_rating: 3000
+
+# Minimum popularity thresholds (0-1)
+# For opponent moves (from all games)
+min_popularity: 0.05
+# For player moves (from master games only)
+min_master_popularity: 0.08
+
+# Minimum number of master games to continue exploring a position
+min_master_games: 50
+
+# Output file for the repertoire
+output_file: repertoire.pgn
+
+# Cache settings
+cache_file: chess_cache.db
+cache_expiry_days: 30
