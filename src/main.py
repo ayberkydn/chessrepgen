@@ -36,7 +36,7 @@ class ConfigLogger:
 
     def log_configuration(self, config) -> None:
         self.logger.info(f"Depth: {config.depth} (player moves after initial moves)")
-        self.logger.info(f"Rating range: {config.min_rating}-{config.max_rating}")
+        self.logger.info(f"Rating brackets: {', '.join(map(str, config.ratings))}")
         self.logger.info(f"Time controls: {config.time_control}")
 
 
@@ -72,26 +72,47 @@ def run_for_side(config, side: str, initial_moves):
 
     builder = RepertoireBuilder(config, side=side)
     logger.info(f"Building {side} repertoire tree...")
-    roots = builder.build_repertoire()
+    repertoire_lines = builder.build_repertoire()
 
-    if not roots:
+    if not repertoire_lines:
         return False
+
+    roots = [line.root for line in repertoire_lines]
+    realized_initial_moves = [line.initial_moves for line in repertoire_lines]
+
+    if len(repertoire_lines) != len(initial_moves):
+        remaining = realized_initial_moves.copy()
+        skipped = []
+        for sequence in initial_moves:
+            if sequence in remaining:
+                remaining.remove(sequence)
+            else:
+                skipped.append(sequence)
+        if skipped:
+            logger.warning(
+                "Skipped %d initial sequences due to build errors or transpositions: %s",
+                len(skipped),
+                skipped,
+            )
 
     side_config = _prepare_side_config(config, side)
 
     logger.info(f"Analyzing alternative moves for {side} repertoire...")
     analyze_tree(roots, side_config)
 
-    logger.info("Pruning tree to focus on best continuations...")
-    prune_tree(roots, side_config)
+    if getattr(side_config, "enable_pruning", True):
+        logger.info("Pruning tree to focus on best continuations...")
+        prune_tree(roots, side_config)
+    else:
+        logger.info("Skipping pruning; configuration keeps all continuations.")
 
     writer = PGNWriter(side_config, side=side)
     output_path = _output_path_for_side(config.output_file, side)
     logger.info(f"Writing {side} repertoire to {output_path}...")
-    writer.write_repertoire(roots, output_path, initial_moves)
+    writer.write_repertoire(roots, output_path, realized_initial_moves)
 
     print(f"{side_label} Repertoire Statistics:")
-    print(writer.get_statistics_summary(roots, initial_moves))
+    print(writer.get_statistics_summary(roots, realized_initial_moves))
     return True
 
 

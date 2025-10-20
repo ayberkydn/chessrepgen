@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import argparse
 import yaml
 import os
-from typing import Any
 from dataclasses import dataclass, field
-from pathlib import Path
+
+from rating_utils import ensure_allowed_ratings
 
 
 @dataclass
@@ -12,36 +14,28 @@ class Config:
     initial_moves_black: list[str] = field(default_factory=lambda: ["e4 d5"])
     time_control: list[str] = field(default_factory=lambda: ["rapid", "blitz"])
     depth: int = 10  # Maximum player moves to explore after initial moves
-    min_rating: int = 1600
-    max_rating: int = 2200
-    min_popularity: float = 0.1
-    min_master_popularity: float = 0.1
-    min_master_games: int = 200
+    ratings: list[int] = field(default_factory=lambda: [1600, 1800, 2000, 2200, 2500])
+    min_opponent_popularity: float = 0.1
+    # Popularity threshold for player moves using master (or fallback) reference data
+    min_highrating_popularity: float = 0.1
+    # Minimum master games required before falling back to high-rating Explorer data
+    min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
     include_comments: bool = True  # Toggle for PGN comments
+    use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
+    enable_pruning: bool = True  # Control whether suboptimal continuations are pruned
     side: str | None = None  # Active side during analysis (set at runtime)
     # Winrate tolerance for selecting multiple moves
     winrate_tolerance: float = 0.05  # 5% tolerance from best move's winrate
-    # Analysis settings
-    # Alternative move analysis is always enabled
-    # Stockfish settings
-    use_stockfish: bool = True  # Enable/disable Stockfish for move selection fallback and terminal node evaluation
-    stockfish_path: str | None = None  # Auto-detect if None
-    stockfish_depth: int = 15
-    stockfish_threshold: float = (
-        0.05  # 5 centipawns from best move (for move selection)
+    # Specialized thresholds for first moves
+    first_move_min_opponent_popularity: float = (
+        0.05  # Relaxed opponent popularity for first reply
     )
-    stockfish_advantage_threshold: float = 1.0  # Terminate if player is ahead by this many pawns (works independently of use_stockfish)
-    # Master game augmentation settings
-    augment_master_games: bool = (
-        True  # Augment master games with high-rated Lichess games
+    first_move_winrate_tolerance: float = (
+        0.03  # Winrate tolerance for player's first move
     )
-    augment_min_rating: int = 2200  # Minimum rating for augmentation games
-    augment_time_controls: list[str] = field(
-        default_factory=lambda: ["classical", "rapid"]
-    )  # Time controls for augmentation
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Config":
@@ -50,7 +44,14 @@ class Config:
             with open(yaml_path, "r") as f:
                 data = yaml.safe_load(f)
                 if data:
+                    key_map = {
+                        "min_master_popularity": "min_highrating_popularity",
+                        "min_master_games": "min_highrating_games",
+                    }
                     for key, value in data.items():
+                        mapped_key = key_map.get(key, key)
+                        if mapped_key != key:
+                            key = mapped_key
                         if hasattr(config, key):
                             setattr(config, key, value)
         return config
@@ -66,17 +67,16 @@ class Config:
                 "Depth must be between 1 and 50 (represents player moves after initial position)"
             )
 
-        if self.min_rating >= self.max_rating:
-            raise ValueError("min_rating must be less than max_rating")
+        ensure_allowed_ratings(self.ratings)
 
-        if not 0 <= self.min_popularity <= 1:
-            raise ValueError("min_popularity must be between 0 and 1")
+        if not 0 <= self.min_opponent_popularity <= 1:
+            raise ValueError("min_opponent_popularity must be between 0 and 1")
 
-        if not 0 <= self.min_master_popularity <= 1:
-            raise ValueError("min_master_popularity must be between 0 and 1")
+        if not 0 <= self.min_highrating_popularity <= 1:
+            raise ValueError("min_highrating_popularity must be between 0 and 1")
 
-        if self.min_master_games < 0:
-            raise ValueError("min_master_games must be non-negative")
+        if self.min_highrating_games < 0:
+            raise ValueError("min_highrating_games must be non-negative")
 
         valid_time_controls = [
             "ultraBullet",
@@ -96,12 +96,13 @@ class Config:
         if not 0 <= self.winrate_tolerance <= 1:
             raise ValueError("winrate_tolerance must be between 0 and 1")
 
-        if hasattr(self, "augment_time_controls"):
-            for tc in self.augment_time_controls:
-                if tc not in valid_time_controls:
-                    raise ValueError(
-                        f"Invalid augmentation time control: {tc}. Must be one of {valid_time_controls}"
-                    )
+        if not 0 <= self.first_move_min_opponent_popularity <= 1:
+            raise ValueError(
+                "first_move_min_opponent_popularity must be between 0 and 1"
+            )
+
+        if not 0 <= self.first_move_winrate_tolerance <= 1:
+            raise ValueError("first_move_winrate_tolerance must be between 0 and 1")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -139,13 +140,11 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         help="Maximum player moves to explore after initial moves (depth in terms of player moves)",
     )
-
     parser.add_argument(
-        "--min-rating", type=int, help="Minimum rating for Lichess games"
-    )
-
-    parser.add_argument(
-        "--max-rating", type=int, help="Maximum rating for Lichess games"
+        "--ratings",
+        type=int,
+        nargs="+",
+        help="Rating bracket lower bounds for Lichess explorer (e.g. 1600 1800 2000)",
     )
 
     parser.add_argument(
@@ -155,15 +154,30 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--min-highrating-popularity",
+        type=float,
+        help="Minimum popularity for player moves in master/high-rating reference games (0-1)",
+    )
+
+    parser.add_argument(
+        "--min-highrating-games",
+        type=int,
+        help="Minimum master games required before falling back to high-rating reference data",
+    )
+
+    # Backward compatibility for legacy flags
+    parser.add_argument(
         "--min-master-popularity",
         type=float,
-        help="Minimum popularity for player moves in master games (0-1)",
+        dest="min_highrating_popularity",
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(
         "--min-master-games",
         type=int,
-        help="Minimum number of master games to continue exploring a position",
+        dest="min_highrating_games",
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(
@@ -183,10 +197,15 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--stockfish-advantage-threshold",
+        "--first-move-opponent-popularity",
         type=float,
-        dest="stockfish_advantage_threshold",
-        help="Terminate branch if Stockfish evaluation shows player is this many pawns ahead (default: 1.0)",
+        help="Minimum popularity for opponent's first reply (0-1)",
+    )
+
+    parser.add_argument(
+        "--first-move-player-tolerance",
+        type=float,
+        help="Winrate tolerance for player's first move (0-1)",
     )
 
     parser.add_argument(
@@ -195,6 +214,38 @@ def parse_arguments() -> argparse.Namespace:
         dest="winrate_tolerance",
         help="Winrate tolerance for selecting multiple moves (default: 0.05)",
     )
+
+    parser.add_argument(
+        "--use-proxy",
+        dest="use_proxy",
+        action="store_true",
+        help="Enable HTTP proxies when contacting Lichess (default: True)",
+    )
+
+    parser.add_argument(
+        "--no-use-proxy",
+        dest="use_proxy",
+        action="store_false",
+        help="Disable HTTP proxies when contacting Lichess",
+    )
+
+    parser.set_defaults(use_proxy=None)
+
+    parser.add_argument(
+        "--prune",
+        dest="enable_pruning",
+        action="store_true",
+        help="Enable pruning of suboptimal continuations (default: enabled)",
+    )
+
+    parser.add_argument(
+        "--no-prune",
+        dest="enable_pruning",
+        action="store_false",
+        help="Disable pruning of suboptimal continuations",
+    )
+
+    parser.set_defaults(enable_pruning=None)
 
     return parser.parse_args()
 

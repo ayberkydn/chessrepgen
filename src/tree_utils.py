@@ -100,7 +100,7 @@ def calculate_path_probability(
         node = path[idx]
         parent = path[idx - 1]
 
-        if node.is_player_turn:
+        if not node.is_player_turn:
             if not assume_uniform_if_missing:
                 stats = getattr(node, "stats", None)
                 if not stats or stats.total_games <= 0:

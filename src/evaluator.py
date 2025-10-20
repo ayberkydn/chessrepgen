@@ -1,7 +1,7 @@
+from __future__ import annotations
+
 import logging
-from typing import Tuple
 from dataclasses import dataclass
-import chess
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,20 @@ class MoveStats:
 
 
 class MoveEvaluator:
-    def __init__(self, config, cache=None, side: str = "white"):
+    def __init__(self, config, side: str = "white"):
         self.config = config
         self.is_white = side == "white"
 
-    def parse_move_data(self, move_data: dict, total_games: int) -> MoveStats:
+    def _opponent_popularity_threshold(self, depth: int) -> float:
+        """Return the popularity threshold for opponent moves."""
+        # Apply the relaxed threshold for the very first opponent move,
+        # accounting for initial moves already played.
+        if depth <= 1:
+            return getattr(self.config, "first_move_min_opponent_popularity", 0.05)
+
+        return self.config.min_opponent_popularity
+
+    def parse_move_data(self, move_data: dict) -> MoveStats:
         return MoveStats(
             uci=move_data.get("uci", ""),
             san=move_data.get("san", ""),
@@ -54,64 +63,61 @@ class MoveEvaluator:
 
     def evaluate_position(
         self,
-        master_data: dict | None,
-        lichess_data: dict | None,
+        lichess_stats: dict | None,
+        player_reference_stats: dict | None,
         is_player_turn: bool,
-        board: chess.Board | None = None,
         depth: int = 0,
     ) -> list[MoveStats]:
         moves = []
 
-        if is_player_turn and lichess_data and lichess_data.get("moves"):
-            # For player moves: filter by master popularity, but use Lichess data for expected score
-            total_lichess_games = (
-                lichess_data.get("white", 0)
-                + lichess_data.get("draws", 0)
-                + lichess_data.get("black", 0)
+        if is_player_turn and lichess_stats and lichess_stats.get("moves"):
+            # For player moves: filter by reference popularity
+            if not player_reference_stats or not player_reference_stats.get("moves"):
+                logger.debug("No reference data available for player move filtering")
+                return []
+
+            total_reference_games = (
+                player_reference_stats.get("white", 0)
+                + player_reference_stats.get("draws", 0)
+                + player_reference_stats.get("black", 0)
             )
 
-            # Build a set of moves that meet master popularity threshold
-            master_popular_moves = set()
-            total_master_games = 0
-            if master_data and master_data.get("moves"):
-                total_master_games = (
-                    master_data.get("white", 0)
-                    + master_data.get("draws", 0)
-                    + master_data.get("black", 0)
-                )
-                for move_data in master_data["moves"]:
-                    if total_master_games > 0:
-                        move_popularity = (
-                            move_data.get("white", 0)
-                            + move_data.get("draws", 0)
-                            + move_data.get("black", 0)
-                        ) / total_master_games
-                        if move_popularity >= self.config.min_master_popularity:
-                            master_popular_moves.add(move_data.get("uci", ""))
-
-            # Check if we have sufficient master games
-            if (
-                len(master_popular_moves) == 0
-                or total_master_games < self.config.min_master_games
-            ):
+            if total_reference_games < self.config.min_highrating_games:
                 logger.debug(
-                    f"Insufficient master games ({total_master_games} < {self.config.min_master_games}) - terminating"
+                    "Insufficient reference games (%s < %s) - terminating",
+                    total_reference_games,
+                    self.config.min_highrating_games,
                 )
                 return []
 
-            # Build a dict of master move data for weighted score calculation
-            master_moves_dict = {}
-            if master_data and master_data.get("moves"):
-                for move_data in master_data["moves"]:
-                    uci = move_data.get("uci", "")
-                    if uci:
-                        master_moves_dict[uci] = move_data
-
-            # Now evaluate moves from Lichess data that are either popular in master games or approved by Stockfish
-            for move_data in lichess_data["moves"]:
+            allowed_moves = set()
+            for move_data in player_reference_stats["moves"]:
                 uci = move_data.get("uci", "")
-                if uci in master_popular_moves:
-                    move_stats = self.parse_move_data(move_data, total_lichess_games)
+                if not uci:
+                    continue
+                move_total = (
+                    move_data.get("white", 0)
+                    + move_data.get("draws", 0)
+                    + move_data.get("black", 0)
+                )
+                if total_reference_games == 0:
+                    continue
+                popularity = move_total / total_reference_games
+                if popularity >= self.config.min_highrating_popularity:
+                    allowed_moves.add(uci)
+
+            if not allowed_moves:
+                logger.debug(
+                    "No moves meet reference popularity threshold %.1f%%",
+                    self.config.min_highrating_popularity * 100,
+                )
+                return []
+
+            # Keep only moves whose popularity clears the reference filter
+            for move_data in lichess_stats["moves"]:
+                uci = move_data.get("uci", "")
+                if uci in allowed_moves:
+                    move_stats = self.parse_move_data(move_data)
                     moves.append(move_stats)
 
             # Sort by Lichess score
@@ -121,9 +127,11 @@ class MoveEvaluator:
             if moves:
                 best_score = moves[0].expected_score(self.is_white)
 
-                # Use 0.025 tolerance for first move only, then use configured tolerance
+                # Use configured tolerance for the first move, then fall back to the standard tolerance
                 if depth == 0:  # First player move only
-                    tolerance = 0.03
+                    tolerance = getattr(
+                        self.config, "first_move_winrate_tolerance", 0.03
+                    )
                 else:  # All subsequent moves
                     tolerance = getattr(self.config, "winrate_tolerance", 0.05)
 
@@ -146,96 +154,60 @@ class MoveEvaluator:
             # For opponent moves: use only Lichess data for popularity calculation
             # This better reflects what opponents actually play at the specified rating range
 
-            if lichess_data and lichess_data.get("moves"):
-                total_lichess = (
-                    lichess_data.get("white", 0)
-                    + lichess_data.get("draws", 0)
-                    + lichess_data.get("black", 0)
-                )
+            if not lichess_stats or not lichess_stats.get("moves"):
+                return []
 
-                # Calculate total games from Lichess data only (for popularity calculation)
-                lichess_total_for_popularity = 0
-                lichess_moves = {}
+            # Calculate total games from Lichess data only (for popularity calculation)
+            lichess_total_for_popularity = 0
+            lichess_moves = {}
 
-                for move_data in lichess_data["moves"]:
-                    uci = move_data.get("uci", "")
-                    if uci:
-                        move_stats = self.parse_move_data(move_data, total_lichess)
-                        lichess_moves[uci] = move_stats
-                        lichess_total_for_popularity += move_stats.total_games
+            for move_data in lichess_stats["moves"]:
+                uci = move_data.get("uci", "")
+                if uci:
+                    move_stats = self.parse_move_data(move_data)
+                    lichess_moves[uci] = move_stats
+                    lichess_total_for_popularity += move_stats.total_games
 
-                # Filter moves by Lichess popularity
-                if lichess_total_for_popularity > 0:
-                    for uci, move_stats in lichess_moves.items():
-                        popularity = (
-                            move_stats.total_games / lichess_total_for_popularity
-                        )
-                        if popularity >= self.config.min_popularity:
-                            moves.append(move_stats)
+            # Filter moves by Lichess popularity
+            if lichess_total_for_popularity > 0:
+                popularity_threshold = self._opponent_popularity_threshold(depth)
+                for uci, move_stats in lichess_moves.items():
+                    popularity = move_stats.total_games / lichess_total_for_popularity
+                    if popularity >= popularity_threshold:
+                        moves.append(move_stats)
 
-                moves.sort(key=lambda m: m.total_games, reverse=True)
-                return moves[:10]
-
-            # Fallback to master data if no Lichess data available
-            elif master_data and master_data.get("moves"):
-                total_master = (
-                    master_data.get("white", 0)
-                    + master_data.get("draws", 0)
-                    + master_data.get("black", 0)
-                )
-
-                master_total_for_popularity = 0
-                master_moves = {}
-
-                for move_data in master_data["moves"]:
-                    uci = move_data.get("uci", "")
-                    if uci:
-                        move_stats = self.parse_move_data(move_data, total_master)
-                        master_moves[uci] = move_stats
-                        master_total_for_popularity += move_stats.total_games
-
-                if master_total_for_popularity > 0:
-                    for uci, move_stats in master_moves.items():
-                        popularity = (
-                            move_stats.total_games / master_total_for_popularity
-                        )
-                        if popularity >= self.config.min_popularity:
-                            moves.append(move_stats)
-
-                moves.sort(key=lambda m: m.total_games, reverse=True)
-                return moves[:10]
+            moves.sort(key=lambda m: m.total_games, reverse=True)
+            return moves[:10]
 
         return moves
 
     def should_terminate(
         self,
         depth: int,
-        master_data: dict | None,
-        lichess_data: dict | None,
-        board: chess.Board | None = None,
+        lichess_stats: dict | None,
     ) -> tuple[bool, str]:
         if depth > self.config.depth:
             return True, f"Maximum depth {self.config.depth} player moves reached"
 
         # Check if position is already very favorable based on Lichess winrate
-        if lichess_data:
+        if lichess_stats:
             total_lichess = (
-                lichess_data.get("white", 0)
-                + lichess_data.get("draws", 0)
-                + lichess_data.get("black", 0)
+                lichess_stats.get("white", 0)
+                + lichess_stats.get("draws", 0)
+                + lichess_stats.get("black", 0)
             )
 
             if total_lichess > 0:
                 # Calculate winrate from player's perspective
                 if self.is_white:
                     winrate = (
-                        lichess_data.get("white", 0)
-                        + 0.5 * lichess_data.get("draws", 0)
+                        lichess_stats.get("white", 0)
+                        + 0.5 * lichess_stats.get("draws", 0)
                     ) / total_lichess
                 else:
                     winrate = (
-                        lichess_data.get("black", 0)
-                        + 0.5 * lichess_data.get("draws", 0)
+                        lichess_stats.get("black", 0)
+                        + 0.5 * lichess_stats.get("draws", 0)
                     ) / total_lichess
 
                 # Terminate if winrate is already very high (> 70%)

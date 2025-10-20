@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from tree_utils import count_descendants, count_nodes, remove_descendants
+from tree_utils import count_descendants, remove_descendants
 
 if TYPE_CHECKING:
     from repertoire_builder import RepertoireNode
@@ -23,8 +23,7 @@ logger = logging.getLogger(__name__)
 class TreePruner:
     """Prunes repertoire trees to focus on best continuations."""
 
-    def __init__(self, config):
-        self.config = config
+    def __init__(self):
         self.pruned_count = 0
         self.preserved_count = 0
 
@@ -83,7 +82,7 @@ class TreePruner:
 
     def _find_best_move(
         self, children: list["RepertoireNode"]
-    ) -> Optional["RepertoireNode"]:
+    ) -> RepertoireNode | None:
         """Find the child with the highest expected winrate.
 
         Args:
@@ -138,36 +137,18 @@ class TreePruner:
                 f"Pruned {nodes_removed} nodes after {node.move_san} ({pruning_comment})"
             )
 
-    def get_pruning_summary(self, roots: list["RepertoireNode"]) -> str:
-        """Generate a summary of pruning results.
 
-        Args:
-            roots: List of root nodes
-
-        Returns:
-            Summary string with pruning statistics
-        """
-        total_nodes_before = sum(count_nodes(root) for root in roots)
-        total_nodes_after = sum(count_nodes(root) for root in roots)
-        nodes_removed = total_nodes_before - total_nodes_after
-
-        summary = f"Tree Pruning Summary:\n"
-        summary += f"  Total nodes before pruning: {total_nodes_before}\n"
-        summary += f"  Total nodes after pruning: {total_nodes_after}\n"
-        summary += f"  Nodes removed: {nodes_removed}\n"
-        summary += f"  Best-move continuations preserved: {self.preserved_count}\n"
-        summary += f"  Suboptimal continuations pruned: {self.pruned_count}"
-
-        return summary
-
-
-def prune_tree(roots: List["RepertoireNode"], config) -> None:
-    """Convenience function to prune a repertoire tree.
+def prune_tree(roots: list["RepertoireNode"], _config=None) -> TreePruner:
+    """Convenience helper to prune repertoire trees.
 
     Args:
-        roots: List of root nodes
-        config: Configuration object
+        roots: List of root nodes in the repertoire tree.
+        _config: Optional configuration; pruning is skipped if enable_pruning is False.
     """
-    pruner = TreePruner(config)
+    if _config is not None and not getattr(_config, "enable_pruning", True):
+        logger.info("Pruning disabled via configuration; skipping tree pruning.")
+        return TreePruner()
+
+    pruner = TreePruner()
     pruner.prune_tree(roots)
     return pruner

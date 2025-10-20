@@ -1,38 +1,37 @@
-# Chess Repertoire Generator Configuration
-
-# initial_moves_white:
-#   - e4 c6 c4
-#   - e4 c6 d4
-
 initial_moves_white:
+  # - "e4"
   - ""
 
 initial_moves_black:
   # - ""
-
-# Time controls to consider for Lichess games
+  #
 time_control:
+  # - classical
   - rapid
   - blitz
 
+ratings:
+  - 1600
+  - 1800
+  - 2000
+  - 2200
+  - 2500
+
 depth: 7
-#
-# Rating range for Lichess games
-min_rating: 1600
-# min_rating: 2000
-max_rating: 3000
 
-# Minimum popularity thresholds (0-1)
-# For opponent moves (from all games)
-min_popularity: 0.05
-# For player moves (from master games only)
-min_master_popularity: 0.05
+min_opponent_popularity: 0.04
+first_move_min_opponent_popularity: 0.01
 
-# Minimum number of master games to continue exploring a position
-min_master_games: 20
+min_highrating_popularity: 0.05
+
+winrate_tolerance: 0.015
+first_move_winrate_tolerance: 0.05
+
+# Minimum number of master games before using high-rating fallback data
+min_highrating_games: 20
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 500
+min_lichess_games: 1000
 
 # Output file for the repertoire
 output_file: repertoire.pgn
@@ -43,11 +42,7 @@ cache_file: chess_cache.db
 # Comment settings
 include_comments: true
 
-winrate_tolerance: 0.01
+# Pruning settings
+enable_pruning: true
 
-# Augment master database with high-rated Lichess games
-augment_master_games: true
-augment_min_rating: 2500 # Minimum rating for augmentation games
-augment_time_controls: # Time controls to use for augmentation
-  - classical
-  - rapid
+use_proxy: true

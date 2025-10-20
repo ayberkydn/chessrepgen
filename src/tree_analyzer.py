@@ -7,13 +7,15 @@ moves have the best expected outcomes based on probability-weighted terminal nod
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-import chess
+from typing import TYPE_CHECKING
 
 from tree_utils import (
     iter_terminal_probabilities,
     remove_descendants,
 )
+
+if TYPE_CHECKING:
+    from repertoire_builder import RepertoireNode
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,8 @@ class TreeAnalyzer:
             setattr(node, "best_child", None)
             return
 
+        pruning_enabled = getattr(self.config, "enable_pruning", True)
+
         best_child = node.children[0]
         setattr(node, "best_child", best_child)
         setattr(best_child, "is_best_continuation", True)
@@ -116,17 +120,18 @@ class TreeAnalyzer:
         # All other moves lose their continuation so we assume best play later
         for child in node.children[1:]:
             setattr(child, "is_best_continuation", False)
-            if child.children:
+            if pruning_enabled and child.children:
                 remove_descendants(child)
-            self._tag_pruning_comment(child)
+            if pruning_enabled:
+                self._tag_pruning_comment(child)
 
     def _tag_pruning_comment(self, node: "RepertoireNode") -> None:
         """Annotate nodes whose branches were removed during pruning."""
-        expected = getattr(node, "expected_winrate", None)
-        if expected is not None:
-            reason = "[PRUNED]"
+        expected_winrate = getattr(node, "expected_winrate", None)
+        if expected_winrate is not None:
+            reason = f"[PRUNED] Alternative expected winrate: {expected_winrate:.1%}"
         else:
-            reason = "[PRUNED]"
+            reason = "[PRUNED] Alternative continuation removed"
 
         node.termination_reason = reason
 
@@ -205,14 +210,13 @@ class TreeAnalyzer:
         Args:
             node: Node to add comments to
         """
-        for i, child in enumerate(node.children):
+        total_alternatives = len(node.children)
+        for index, child in enumerate(node.children):
             expected_winrate = getattr(child, "expected_winrate", 0)
-
-            # Add ranking information
-            rank = i + 1
-            total_alternatives = len(node.children)
-
-            analysis_comment = f"Expected: {expected_winrate:.1%}"
+            rank = index + 1
+            analysis_comment = (
+                f"Expected: {expected_winrate:.1%} (rank {rank}/{total_alternatives})"
+            )
 
             # Append to existing comments
             if child.comment:
