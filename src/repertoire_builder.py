@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import chess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import deque
+from heapq import heappush, heappop
+from itertools import count
 from lichess_client import LichessClient
 from cache import ChessCache
 from evaluator import MoveEvaluator, MoveStats
@@ -18,18 +20,32 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RepertoireNode:
     board: chess.Board
-    move: chess.Move | None
-    move_san: str | None
-    stats: MoveStats | None
-    depth: int
+    fen: str
+    key: str
     is_player_turn: bool
-    termination_reason: str | None
-    children: list["RepertoireNode"]
     comment: str = ""
-    position_stats: dict | None = None  # Store position statistics for terminal nodes
+    termination_reason: str | None = None
+    position_stats: dict | None = None
+    edges: list["RepertoireEdge"] = field(default_factory=list)
+    ancestors: set[str] = field(default_factory=set)
+    min_player_depth: int | None = None
 
-    def add_child(self, child: "RepertoireNode"):
-        self.children.append(child)
+    def add_edge(self, edge: "RepertoireEdge") -> None:
+        self.edges.append(edge)
+
+
+@dataclass
+class RepertoireEdge:
+    parent: RepertoireNode
+    child: RepertoireNode
+    move: chess.Move
+    move_san: str
+    stats: MoveStats | None
+    resulting_depth: int
+    comment: str = ""
+    termination_reason: str | None = None
+    is_terminal: bool = False
+    is_best_continuation: bool = False
 
 
 @dataclass
@@ -64,7 +80,9 @@ class RepertoireBuilder:
         self.cache = ChessCache(config.cache_file)
         self.evaluator = MoveEvaluator(config, side)
         self.is_white = side == "white"
-        self.visited_positions: set[str] = set()
+        self.nodes_by_key: dict[str, RepertoireNode] = {}
+        self._expanded_keys: set[str] = set()
+        self._heap_counter = count()
 
     def _total_games(self, stats: dict | None) -> int:
         if not stats:
@@ -272,6 +290,226 @@ class RepertoireBuilder:
             "combined_reference": combined_stats,
         }
 
+    def _reset_graph_state(self) -> None:
+        self.nodes_by_key.clear()
+        self._expanded_keys.clear()
+        self._heap_counter = count()
+
+    def _ensure_position_data(self, node: RepertoireNode) -> dict:
+        if node.position_stats is None:
+            node.position_stats = self.get_position_data(node.fen)
+        return node.position_stats
+
+    def _propagate_ancestors(self, node: RepertoireNode, ancestors: set[str]) -> None:
+        missing = ancestors - node.ancestors
+        if not missing:
+            return
+
+        queue: deque[RepertoireNode] = deque([node])
+        while queue:
+            current = queue.popleft()
+            diff = ancestors - current.ancestors
+            if not diff:
+                continue
+            current.ancestors |= diff
+            for edge in current.edges:
+                queue.append(edge.child)
+
+    def _get_or_create_node_from_board(
+        self,
+        board: chess.Board,
+        ancestors: set[str],
+    ) -> RepertoireNode:
+        key = self._position_key(board)
+        existing = self.nodes_by_key.get(key)
+        if existing:
+            if ancestors:
+                self._propagate_ancestors(existing, ancestors)
+            return existing
+
+        node = RepertoireNode(
+            board=board.copy(),
+            fen=board.fen(),
+            key=key,
+            is_player_turn=(board.turn == chess.WHITE) == self.is_white,
+            ancestors=set(ancestors),
+        )
+        self.nodes_by_key[key] = node
+        return node
+
+    def _position_key(self, board: chess.Board) -> str:
+        return board.epd()
+
+    def _expand_node(
+        self,
+        node: RepertoireNode,
+        heap: list[tuple[int, int, RepertoireNode]],
+    ) -> None:
+        position_stats = self._ensure_position_data(node)
+        lichess_stats = position_stats.get("lichess")
+        player_reference = position_stats.get("player_reference")
+        depth_for_evaluator = node.min_player_depth or 0
+
+        candidate_moves = self.evaluator.evaluate_position(
+            lichess_stats,
+            player_reference,
+            node.is_player_turn,
+            depth_for_evaluator,
+        )
+
+        if not candidate_moves:
+            self._set_no_candidate_moves_termination(node, node.is_player_turn)
+            return
+
+        ancestors_with_current = set(node.ancestors)
+        ancestors_with_current.add(node.key)
+
+        added_edge = False
+        cycle_detected = False
+
+        for move_stats in candidate_moves:
+            try:
+                move = chess.Move.from_uci(move_stats.uci)
+            except ValueError:
+                logger.warning("Invalid move from API: %s", move_stats.uci)
+                continue
+
+            board_copy = node.board.copy()
+            if move not in board_copy.legal_moves:
+                logger.warning("Illegal move from API: %s", move_stats.uci)
+                continue
+
+            san = board_copy.san(move)
+            board_copy.push(move)
+            child_fen = board_copy.fen()
+            child_key = self._position_key(board_copy)
+
+            if child_key in ancestors_with_current:
+                cycle_detected = True
+                continue
+
+            child_ancestors = ancestors_with_current.copy()
+            child_node = self._get_or_create_node_from_board(
+                board_copy, child_ancestors
+            )
+
+            resulting_depth = depth_for_evaluator + (1 if node.is_player_turn else 0)
+
+            game_over_reason = None
+            if board_copy.is_game_over():
+                game_result = board_copy.result()
+                game_over_reason = f"Game over: {game_result}"
+
+            edge_reason = ""
+            edge_terminal = False
+
+            if game_over_reason:
+                edge_terminal = True
+                edge_reason = game_over_reason
+                if not child_node.termination_reason:
+                    child_node.termination_reason = game_over_reason
+                    child_node.comment = game_over_reason
+                child_stats = self._ensure_position_data(child_node)
+            else:
+                child_stats = self._ensure_position_data(child_node)
+                termination_decision = self.evaluator.should_terminate(
+                    resulting_depth,
+                    child_stats.get("lichess"),
+                )
+
+                edge_terminal = termination_decision.should_stop
+
+                if termination_decision.should_stop and termination_decision.reason:
+                    edge_reason = termination_decision.reason
+                    if termination_decision.applies_to_position:
+                        if not child_node.termination_reason:
+                            child_node.termination_reason = termination_decision.reason
+                            child_node.comment = termination_decision.reason
+                elif child_node.termination_reason:
+                    edge_terminal = True
+                    edge_reason = child_node.termination_reason
+
+            side_label = "White" if self.is_white else "Black"
+            win_margin = move_stats.win_margin(self.is_white) * 100
+            comment_parts = [
+                f"{side_label} win margin: {win_margin:.1f}",
+                f"Samples: {move_stats.total_games}",
+            ]
+            if edge_reason:
+                comment_parts.append(edge_reason)
+            edge_comment = " | ".join(comment_parts)
+
+            edge = RepertoireEdge(
+                parent=node,
+                child=child_node,
+                move=move,
+                move_san=san,
+                stats=move_stats,
+                resulting_depth=resulting_depth,
+                comment=edge_comment,
+                termination_reason=edge_reason or None,
+                is_terminal=edge_terminal or bool(child_node.termination_reason),
+            )
+
+            node.add_edge(edge)
+            added_edge = True
+
+            if edge.is_terminal:
+                continue
+
+            new_depth = resulting_depth
+            current_depth = child_node.min_player_depth
+            if current_depth is None or new_depth < current_depth:
+                child_node.min_player_depth = new_depth
+                heappush(heap, (new_depth, next(self._heap_counter), child_node))
+
+        if not added_edge and not node.termination_reason:
+            if cycle_detected:
+                node.termination_reason = "All continuations repeat earlier positions"
+            else:
+                node.termination_reason = "No valid continuations available"
+            node.comment = (
+                f"{node.comment} | {node.termination_reason}"
+                if node.comment
+                else node.termination_reason
+            )
+
+    def _build_graph_from_board(self, board: chess.Board) -> RepertoireNode:
+        self._reset_graph_state()
+
+        root = self._get_or_create_node_from_board(board, set())
+        root.min_player_depth = 0
+        root_stats = self._ensure_position_data(root)
+
+        termination_decision = self.evaluator.should_terminate(
+            0,
+            root_stats.get("lichess"),
+        )
+
+        if termination_decision.should_stop:
+            if termination_decision.applies_to_position:
+                root.termination_reason = termination_decision.reason
+            if termination_decision.reason:
+                root.comment = termination_decision.reason
+            return root
+
+        heap: list[tuple[int, int, RepertoireNode]] = []
+        heappush(heap, (0, next(self._heap_counter), root))
+
+        while heap:
+            depth, _, node = heappop(heap)
+            if node.termination_reason:
+                continue
+            if node.min_player_depth is None or depth != node.min_player_depth:
+                continue
+            if node.key in self._expanded_keys:
+                continue
+
+            self._expanded_keys.add(node.key)
+            self._expand_node(node, heap)
+
+        return root
+
     def _set_no_candidate_moves_termination(
         self,
         node: RepertoireNode,
@@ -378,7 +616,7 @@ class RepertoireBuilder:
                 for move in initial_moves:
                     board.push(move)
 
-                root = self.build_node_breadth_first(board)
+                root = self._build_graph_from_board(board)
                 if root:
                     lines.append(RepertoireLine(initial_moves_str, root))
 
@@ -387,168 +625,3 @@ class RepertoireBuilder:
                 continue
 
         return lines
-
-    def build_node_breadth_first(self, board: chess.Board) -> RepertoireNode | None:
-        """Build repertoire tree using breadth-first search approach."""
-        fen = board.fen()
-        if fen in self.visited_positions:
-            logger.debug(f"Position already visited: {fen[:20]}...")
-            return None
-
-        self.visited_positions.add(fen)
-        is_player_turn = (board.turn == chess.WHITE) == self.is_white
-
-        # Create root node
-        root = RepertoireNode(
-            board=board.copy(),
-            move=None,
-            move_san=None,
-            stats=None,
-            depth=0,
-            is_player_turn=is_player_turn,
-            termination_reason=None,
-            children=[],
-        )
-
-        # Check for immediate termination conditions
-        if board.is_game_over():
-            result = board.result()
-            root.termination_reason = f"Game over: {result}"
-            root.comment = f"Game ends: {result}"
-            return root
-
-        position_data = self.get_position_data(fen)
-        lichess_stats = position_data["lichess"]
-        root.position_stats = position_data
-
-        should_stop, reason = self.evaluator.should_terminate(0, lichess_stats)
-
-        if should_stop:
-            root.termination_reason = reason
-            root.comment = reason
-            return root
-
-        queue = deque([root])
-
-        while queue:
-            node = queue.popleft()
-
-            if node.termination_reason:
-                continue
-
-            current_board = node.board.copy()
-            current_is_player_turn = node.is_player_turn
-
-            # Get candidate moves for this position
-            candidate_moves = self.evaluator.evaluate_position(
-                node.position_stats["lichess"],
-                node.position_stats.get("player_reference"),
-                current_is_player_turn,
-                node.depth,
-            )
-
-            if not candidate_moves:
-                self._set_no_candidate_moves_termination(
-                    node,
-                    current_is_player_turn,
-                )
-                continue
-
-            # Process each candidate move
-            child_added = False
-            for move_stats in candidate_moves:
-                try:
-                    child_board = current_board.copy()
-                    move = chess.Move.from_uci(move_stats.uci)
-
-                    if move not in child_board.legal_moves:
-                        logger.warning(f"Illegal move from API: {move_stats.uci}")
-                        continue
-
-                    san = child_board.san(move)
-                    child_board.push(move)
-
-                    child_fen = child_board.fen()
-                    if child_fen in self.visited_positions:
-                        logger.debug(
-                            f"Child position already visited: {child_fen[:20]}..."
-                        )
-                        continue
-
-                    self.visited_positions.add(child_fen)
-
-                    # Calculate child depth (only increment on player's turn)
-                    child_depth = node.depth
-                    if current_is_player_turn:
-                        child_depth += 1
-
-                    # Create child node
-                    child_is_player_turn = (
-                        child_board.turn == chess.WHITE
-                    ) == self.is_white
-                    child_node = RepertoireNode(
-                        board=child_board.copy(),
-                        move=move,
-                        move_san=san,
-                        stats=move_stats,
-                        depth=child_depth,
-                        is_player_turn=child_is_player_turn,
-                        termination_reason=None,
-                        children=[],
-                    )
-
-                    # Check termination conditions for child
-                    child_terminated = False
-
-                    if child_board.is_game_over():
-                        result = child_board.result()
-                        child_node.termination_reason = f"Game over: {result}"
-                        child_node.comment = f"Game ends: {result}"
-                        child_terminated = True
-                    else:
-                        child_position_data = self.get_position_data(child_fen)
-                        child_node.position_stats = child_position_data
-
-                        should_stop_child, reason_child = (
-                            self.evaluator.should_terminate(
-                                child_depth,
-                                child_position_data["lichess"],
-                            )
-                        )
-
-                        if should_stop_child:
-                            child_node.termination_reason = reason_child
-                            child_node.comment = reason_child
-                            child_terminated = True
-
-                    # Add statistics comment
-                    score = move_stats.expected_score(self.is_white)
-                    stats_comment = f"Score: {score:.1%}"
-                    if child_node.termination_reason:
-                        child_node.comment = (
-                            f"{stats_comment} | {child_node.termination_reason}"
-                        )
-                    else:
-                        child_node.comment = stats_comment
-
-                    # Add child to parent
-                    node.add_child(child_node)
-                    child_added = True
-
-                    # If child is not terminated and we haven't exceeded max depth, continue exploring
-                    if not child_terminated and child_depth <= self.config.depth:
-                        queue.append(child_node)
-
-                except Exception as e:
-                    logger.error(f"Error processing move {move_stats.uci}: {e}")
-                    continue
-
-            if not child_added and not node.termination_reason:
-                node.termination_reason = "Transposes to previously analyzed line"
-                if node.comment:
-                    if node.termination_reason not in node.comment:
-                        node.comment = f"{node.comment} | {node.termination_reason}"
-                else:
-                    node.comment = node.termination_reason
-
-        return root

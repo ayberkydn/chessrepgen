@@ -10,8 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 from repertoire_builder import RepertoireBuilder
 from pgn_writer import PGNWriter
-from tree_analyzer import analyze_tree
-from tree_pruner import prune_tree
 
 
 class ConfigLogger:
@@ -96,15 +94,6 @@ def run_for_side(config, side: str, initial_moves):
             )
 
     side_config = _prepare_side_config(config, side)
-
-    logger.info(f"Analyzing alternative moves for {side} repertoire...")
-    analyze_tree(roots, side_config)
-
-    if getattr(side_config, "enable_pruning", True):
-        logger.info("Pruning tree to focus on best continuations...")
-        prune_tree(roots, side_config)
-    else:
-        logger.info("Skipping pruning; configuration keeps all continuations.")
 
     writer = PGNWriter(side_config, side=side)
     output_path = _output_path_for_side(config.output_file, side)

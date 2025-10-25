@@ -19,13 +19,12 @@ ratings:
 
 depth: 7
 
-min_opponent_popularity: 0.04
-first_move_min_opponent_popularity: 0.01
+min_opponent_popularity: 0.05
+first_move_min_opponent_popularity: 0.05
 
 min_highrating_popularity: 0.05
-
-winrate_tolerance: 0.015
-first_move_winrate_tolerance: 0.05
+winrate_margin_tolerance: 0.02
+first_move_winrate_margin_tolerance: 0.05
 
 # Minimum number of master games before using high-rating fallback data
 min_highrating_games: 20
@@ -42,7 +41,4 @@ cache_file: chess_cache.db
 # Comment settings
 include_comments: true
 
-# Pruning settings
-enable_pruning: true
-
-use_proxy: true
+use_proxy: false

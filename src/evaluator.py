@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +21,37 @@ class MoveStats:
         return self.total_games
 
     @property
-    def expected_score_white(self) -> float:
+    def white_win_rate(self) -> float:
         if self.total_games == 0:
-            return 0.5
-        return (self.white_wins + 0.5 * self.draws) / self.total_games
+            return 0.0
+        return self.white_wins / self.total_games
 
     @property
-    def expected_score_black(self) -> float:
+    def black_win_rate(self) -> float:
         if self.total_games == 0:
-            return 0.5
-        return (self.black_wins + 0.5 * self.draws) / self.total_games
+            return 0.0
+        return self.black_wins / self.total_games
 
-    def expected_score(self, for_white: bool) -> float:
-        return self.expected_score_white if for_white else self.expected_score_black
+    @property
+    def draw_rate(self) -> float:
+        if self.total_games == 0:
+            return 0.0
+        return self.draws / self.total_games
+
+    def win_rate(self, for_white: bool) -> float:
+        return self.white_win_rate if for_white else self.black_win_rate
+
+    def win_margin(self, for_white: bool) -> float:
+        """Difference between the player's and opponent's win percentages."""
+        player_win_rate = self.win_rate(for_white)
+        opponent_win_rate = self.win_rate(not for_white)
+        return player_win_rate - opponent_win_rate
+
+
+class TerminationDecision(NamedTuple):
+    should_stop: bool
+    reason: str
+    applies_to_position: bool
 
 
 class MoveEvaluator:
@@ -114,41 +133,37 @@ class MoveEvaluator:
                 return []
 
             # Keep only moves whose popularity clears the reference filter
+            candidate_moves: list[MoveStats] = []
+            best_margin: float | None = None
             for move_data in lichess_stats["moves"]:
                 uci = move_data.get("uci", "")
                 if uci in allowed_moves:
                     move_stats = self.parse_move_data(move_data)
+                    candidate_moves.append(move_stats)
+                    margin = move_stats.win_margin(self.is_white)
+                    if best_margin is None or margin > best_margin:
+                        best_margin = margin
+
+            if not candidate_moves or best_margin is None:
+                return []
+
+            tolerance = getattr(self.config, "winrate_margin_tolerance", 0.0)
+            if depth <= 1:
+                tolerance = getattr(
+                    self.config,
+                    "first_move_winrate_margin_tolerance",
+                    tolerance,
+                )
+            for move_stats in candidate_moves:
+                margin = move_stats.win_margin(self.is_white)
+                if best_margin - margin <= tolerance:
                     moves.append(move_stats)
 
-            # Sort by Lichess score
-            moves.sort(key=lambda m: m.expected_score(self.is_white), reverse=True)
-
-            # For player's repertoire: return all moves within winrate tolerance of the best move
-            if moves:
-                best_score = moves[0].expected_score(self.is_white)
-
-                # Use configured tolerance for the first move, then fall back to the standard tolerance
-                if depth == 0:  # First player move only
-                    tolerance = getattr(
-                        self.config, "first_move_winrate_tolerance", 0.03
-                    )
-                else:  # All subsequent moves
-                    tolerance = getattr(self.config, "winrate_tolerance", 0.05)
-
-                # Select all moves within the tolerance range
-                qualifying_moves = []
-                for move in moves:
-                    move_score = move.expected_score(self.is_white)
-                    if best_score - move_score <= tolerance:
-                        qualifying_moves.append(move)
-                    else:
-                        # Since moves are sorted by score, we can break early
-                        break
-
-                logger.debug(
-                    f"Depth {depth}: Selected {len(qualifying_moves)} moves within {tolerance:.1%} tolerance of best score {best_score:.1%}"
-                )
-                return qualifying_moves
+            moves.sort(
+                key=lambda m: (m.win_margin(self.is_white), m.total_games),
+                reverse=True,
+            )
+            return moves
 
         elif not is_player_turn:
             # For opponent moves: use only Lichess data for popularity calculation
@@ -169,12 +184,29 @@ class MoveEvaluator:
                     lichess_total_for_popularity += move_stats.total_games
 
             # Filter moves by Lichess popularity
+            popularity_threshold = self._opponent_popularity_threshold(depth)
             if lichess_total_for_popularity > 0:
-                popularity_threshold = self._opponent_popularity_threshold(depth)
                 for uci, move_stats in lichess_moves.items():
                     popularity = move_stats.total_games / lichess_total_for_popularity
                     if popularity >= popularity_threshold:
                         moves.append(move_stats)
+
+            if not moves and lichess_moves:
+                fallback_count = getattr(self.config, "opponent_fallback_count", 1)
+                if fallback_count > 0:
+                    sorted_moves = sorted(
+                        lichess_moves.values(),
+                        key=lambda m: m.total_games,
+                        reverse=True,
+                    )
+                    fallback = sorted_moves[:fallback_count]
+                    moves.extend(fallback)
+                    logger.debug(
+                        "Depth %s: No opponent moves met popularity threshold %.1f%%; falling back to top %s move(s)",
+                        depth,
+                        popularity_threshold * 100,
+                        fallback_count,
+                    )
 
             moves.sort(key=lambda m: m.total_games, reverse=True)
             return moves[:10]
@@ -185,9 +217,13 @@ class MoveEvaluator:
         self,
         depth: int,
         lichess_stats: dict | None,
-    ) -> tuple[bool, str]:
+    ) -> TerminationDecision:
         if depth > self.config.depth:
-            return True, f"Maximum depth {self.config.depth} player moves reached"
+            return TerminationDecision(
+                True,
+                f"Maximum depth {self.config.depth} player moves reached",
+                False,
+            )
 
         # Check if position is already very favorable based on Lichess winrate
         if lichess_stats:
@@ -197,36 +233,16 @@ class MoveEvaluator:
                 + lichess_stats.get("black", 0)
             )
 
-            if total_lichess > 0:
-                # Calculate winrate from player's perspective
-                if self.is_white:
-                    winrate = (
-                        lichess_stats.get("white", 0)
-                        + 0.5 * lichess_stats.get("draws", 0)
-                    ) / total_lichess
-                else:
-                    winrate = (
-                        lichess_stats.get("black", 0)
-                        + 0.5 * lichess_stats.get("draws", 0)
-                    ) / total_lichess
-
-                # Terminate if winrate is already very high (> 70%)
-                if winrate > 0.70:
-                    return (
-                        True,
-                        f"Position already very favorable (winrate: {winrate:.1%})",
-                    )
-
             # Check for insufficient games
             min_lichess = getattr(self.config, "min_lichess_games", 1000)
             if total_lichess < min_lichess:
-                return (
+                return TerminationDecision(
                     True,
                     f"Insufficient Lichess games ({total_lichess} < {min_lichess})",
+                    True,
                 )
         else:
-            return True, "No Lichess games data available"
+            return TerminationDecision(True, "No Lichess games data available", True)
 
         # No Stockfish evaluation - rely on winrate data only
-
-        return False, ""
+        return TerminationDecision(False, "", False)

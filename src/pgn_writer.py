@@ -1,12 +1,31 @@
 import chess
 import chess.pgn
 import logging
+import re
 
 from datetime import datetime
 from io import StringIO
 
 
 logger = logging.getLogger(__name__)
+
+
+def extract_and_format_stats_comment(edge, is_white: bool) -> str:
+    """Extract win/draw/black statistics and format them for PGN comments.
+
+    Returns formatted comment like: W:51.2, D:15.0, B:33.8, WinMargin:12.34
+    """
+    if not hasattr(edge, "stats") or not edge.stats:
+        return ""
+
+    stats = edge.stats
+
+    if not hasattr(stats, "win_margin"):
+        return ""
+
+    win_margin = stats.win_margin(is_white) * 100
+
+    return f"WM: {win_margin:.2f}"
 
 
 class PGNWriter:
@@ -16,70 +35,37 @@ class PGNWriter:
         self.include_comments = getattr(config, "include_comments", True)
 
     def _ensure_terminal_annotations(self, node) -> None:
-        """Ensure every terminal node carries a termination reason comment."""
-
-        def visit(current):
-            if not current.children:
-                reason = current.termination_reason
-                if not reason:
-                    if current.is_player_turn:
-                        reason = (
-                            f"[TRUNCATED] Player continuation not analyzed "
-                            f"(depth limit: {self.config.depth})"
-                        )
-                    else:
-                        reason = (
-                            f"[TRUNCATED] Opponent continuation not analyzed "
-                            f"(depth limit: {self.config.depth})"
-                        )
-                    current.termination_reason = reason
-
-                if self.include_comments and reason:
-                    comment = current.comment or ""
-                    if reason not in comment:
-                        if comment:
-                            current.comment = f"{comment} | {reason}"
-                        else:
-                            current.comment = reason
-                return
-
-            for child in current.children:
-                visit(child)
-
-        visit(node)
+        """Skip terminal annotations - we only want formatted statistics comments."""
+        # This method is intentionally left empty to remove termination reason comments
+        pass
 
     def node_to_pgn_variation(
         self, node, game_node: chess.pgn.GameNode, is_main_line: bool = True
     ) -> None:
-        if not node.children:
-            # This is a terminal node - add termination reason if present
-            if self.include_comments:
-                reason = node.termination_reason
-                existing_comment = game_node.comment or node.comment or ""
-
-                if reason:
-                    if existing_comment:
-                        if reason not in existing_comment:
-                            game_node.comment = f"{existing_comment} | {reason}"
-                        else:
-                            game_node.comment = existing_comment
-                    else:
-                        game_node.comment = reason
-                elif existing_comment:
-                    game_node.comment = existing_comment
+        if not node.edges:
+            # This is a terminal node - only include formatted statistics for parent edge
+            # Skip all termination reasons and other comments
             return
 
-        for i, child in enumerate(node.children):
-            if child.move:
+        for i, edge in enumerate(node.edges):
+            if edge.move:
                 if i == 0 and is_main_line:
-                    new_node = game_node.add_main_variation(child.move)
+                    new_node = game_node.add_main_variation(edge.move)
                 else:
-                    new_node = game_node.add_variation(child.move)
+                    new_node = game_node.add_variation(edge.move)
 
-                if self.include_comments and child.comment:
-                    new_node.comment = child.comment
+                if self.include_comments:
+                    # Only include formatted statistics, remove all other comments
+                    stats_comment = extract_and_format_stats_comment(
+                        edge, self.is_white
+                    )
+                    if stats_comment:
+                        new_node.comment = stats_comment
 
-                self.node_to_pgn_variation(child, new_node, is_main_line=(i == 0))
+                if edge.is_terminal:
+                    continue
+
+                self.node_to_pgn_variation(edge.child, new_node, is_main_line=(i == 0))
 
     def create_pgn_game(self, root_node, initial_moves_str: str) -> chess.pgn.Game:
         game = chess.pgn.Game()
@@ -163,11 +149,13 @@ class PGNWriter:
             total_positions += 1
             max_depth_reached = max(max_depth_reached, depth)
 
-            if len(node.children) > 1:
-                total_variations += len(node.children) - 1
+            if len(node.edges) > 1:
+                total_variations += len(node.edges) - 1
 
-            for child in node.children:
-                count_nodes(child, depth + 1)
+            for edge in node.edges:
+                if edge.is_terminal:
+                    continue
+                count_nodes(edge.child, depth + 1)
 
         for root in roots:
             count_nodes(root)

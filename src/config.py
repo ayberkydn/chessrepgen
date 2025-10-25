@@ -18,6 +18,10 @@ class Config:
     min_opponent_popularity: float = 0.1
     # Popularity threshold for player moves using master (or fallback) reference data
     min_highrating_popularity: float = 0.1
+    # Allow alternative player moves whose win margin is close to the best move
+    winrate_margin_tolerance: float = 0.02
+    # Allow a looser tolerance for the side's very first move
+    first_move_winrate_margin_tolerance: float = 0.05
     # Minimum master games required before falling back to high-rating Explorer data
     min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
@@ -25,16 +29,13 @@ class Config:
     cache_file: str = "chess_cache.db"
     include_comments: bool = True  # Toggle for PGN comments
     use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
-    enable_pruning: bool = True  # Control whether suboptimal continuations are pruned
     side: str | None = None  # Active side during analysis (set at runtime)
-    # Winrate tolerance for selecting multiple moves
-    winrate_tolerance: float = 0.05  # 5% tolerance from best move's winrate
     # Specialized thresholds for first moves
     first_move_min_opponent_popularity: float = (
         0.05  # Relaxed opponent popularity for first reply
     )
-    first_move_winrate_tolerance: float = (
-        0.03  # Winrate tolerance for player's first move
+    opponent_fallback_count: int = (
+        1  # Minimum opponent continuations when popularity threshold fails
     )
 
     @classmethod
@@ -75,6 +76,14 @@ class Config:
         if not 0 <= self.min_highrating_popularity <= 1:
             raise ValueError("min_highrating_popularity must be between 0 and 1")
 
+        if not 0 <= self.winrate_margin_tolerance <= 1:
+            raise ValueError("winrate_margin_tolerance must be between 0 and 1")
+
+        if not 0 <= self.first_move_winrate_margin_tolerance <= 1:
+            raise ValueError(
+                "first_move_winrate_margin_tolerance must be between 0 and 1"
+            )
+
         if self.min_highrating_games < 0:
             raise ValueError("min_highrating_games must be non-negative")
 
@@ -92,17 +101,10 @@ class Config:
                     f"Invalid time control: {tc}. Must be one of {valid_time_controls}"
                 )
 
-        # Validate winrate_tolerance
-        if not 0 <= self.winrate_tolerance <= 1:
-            raise ValueError("winrate_tolerance must be between 0 and 1")
-
         if not 0 <= self.first_move_min_opponent_popularity <= 1:
             raise ValueError(
                 "first_move_min_opponent_popularity must be between 0 and 1"
             )
-
-        if not 0 <= self.first_move_winrate_tolerance <= 1:
-            raise ValueError("first_move_winrate_tolerance must be between 0 and 1")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -160,6 +162,18 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--winrate-margin-tolerance",
+        type=float,
+        help="Allow alternative player moves within this win-margin of the best move (0-1)",
+    )
+
+    parser.add_argument(
+        "--first-move-winrate-margin-tolerance",
+        type=float,
+        help="Allow alternative first moves within this win-margin of the best move (0-1)",
+    )
+
+    parser.add_argument(
         "--min-highrating-games",
         type=int,
         help="Minimum master games required before falling back to high-rating reference data",
@@ -203,19 +217,6 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--first-move-player-tolerance",
-        type=float,
-        help="Winrate tolerance for player's first move (0-1)",
-    )
-
-    parser.add_argument(
-        "--winrate-tolerance",
-        type=float,
-        dest="winrate_tolerance",
-        help="Winrate tolerance for selecting multiple moves (default: 0.05)",
-    )
-
-    parser.add_argument(
         "--use-proxy",
         dest="use_proxy",
         action="store_true",
@@ -230,22 +231,6 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.set_defaults(use_proxy=None)
-
-    parser.add_argument(
-        "--prune",
-        dest="enable_pruning",
-        action="store_true",
-        help="Enable pruning of suboptimal continuations (default: enabled)",
-    )
-
-    parser.add_argument(
-        "--no-prune",
-        dest="enable_pruning",
-        action="store_false",
-        help="Disable pruning of suboptimal continuations",
-    )
-
-    parser.set_defaults(enable_pruning=None)
 
     return parser.parse_args()
 
