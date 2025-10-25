@@ -7,8 +7,6 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
-from rating_utils import ensure_allowed_ratings
-
 
 _ = load_dotenv()
 
@@ -204,7 +202,6 @@ class LichessClient:
     def get_lichess_games(
         self, fen: str, ratings: list[int], speeds: list[str], moves: int = 12
     ) -> dict | None:
-        ensure_allowed_ratings(ratings)
         params = {
             "fen": fen,
             "moves": moves,
@@ -229,8 +226,6 @@ class LichessClient:
     def get_position_stats(
         self, fen: str, ratings: list[int], time_controls: list[str]
     ) -> dict[str, dict | None]:
-        ensure_allowed_ratings(ratings)
-
         lichess_data = self.get_lichess_games(fen, ratings, time_controls)
 
         return {"lichess": lichess_data}

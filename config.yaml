@@ -4,7 +4,7 @@ initial_moves_white:
 
 initial_moves_black:
   # - ""
-  #
+
 time_control:
   # - classical
   - rapid

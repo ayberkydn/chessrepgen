@@ -5,8 +5,6 @@ import yaml
 import os
 from dataclasses import dataclass, field
 
-from rating_utils import ensure_allowed_ratings
-
 
 @dataclass
 class Config:
@@ -67,8 +65,6 @@ class Config:
             raise ValueError(
                 "Depth must be between 1 and 50 (represents player moves after initial position)"
             )
-
-        ensure_allowed_ratings(self.ratings)
 
         if not 0 <= self.min_opponent_popularity <= 1:
             raise ValueError("min_opponent_popularity must be between 0 and 1")

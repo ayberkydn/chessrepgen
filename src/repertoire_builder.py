@@ -9,12 +9,11 @@ from itertools import count
 from lichess_client import LichessClient
 from cache import ChessCache
 from evaluator import MoveEvaluator, MoveStats
-from rating_utils import (
-    PLAYER_POPULARITY_RATINGS,
-    PLAYER_POPULARITY_SPEEDS,
-)
+
 
 logger = logging.getLogger(__name__)
+PLAYER_POPULARITY_RATINGS = [2000, 2200, 2500]
+PLAYER_POPULARITY_SPEEDS = ["rapid", "classical"]
 
 
 @dataclass
@@ -29,6 +28,7 @@ class RepertoireNode:
     edges: list["RepertoireEdge"] = field(default_factory=list)
     ancestors: set[str] = field(default_factory=set)
     min_player_depth: int | None = None
+    terminal_win_margin: float | None = None
 
     def add_edge(self, edge: "RepertoireEdge") -> None:
         self.edges.append(edge)
@@ -381,7 +381,6 @@ class RepertoireBuilder:
 
             san = board_copy.san(move)
             board_copy.push(move)
-            child_fen = board_copy.fen()
             child_key = self._position_key(board_copy)
 
             if child_key in ancestors_with_current:
@@ -596,6 +595,79 @@ class RepertoireBuilder:
                 node.comment = f"{node.comment} | {reason}"
         else:
             node.comment = reason
+
+    def _compute_terminal_win_margin(
+        self,
+        node: RepertoireNode,
+        cache: dict[str, float | None],
+    ) -> float | None:
+        cached = cache.get(node.key)
+        if cached is not None or node.key in cache:
+            node.terminal_win_margin = cached
+            return cached
+
+        if not node.edges:
+            node.terminal_win_margin = None
+            cache[node.key] = None
+            return None
+
+        child_values: list[tuple[float, float]] = []
+        total_weight = 0.0
+
+        for edge in node.edges:
+            margin: float | None = None
+            child_node = edge.child
+            if edge.is_terminal:
+                if edge.stats:
+                    margin = edge.stats.win_margin(self.is_white)
+                    if child_node:
+                        child_node.terminal_win_margin = margin
+                        cache[child_node.key] = margin
+            else:
+                if child_node:
+                    margin = self._compute_terminal_win_margin(child_node, cache)
+                if margin is None and edge.stats:
+                    margin = edge.stats.win_margin(self.is_white)
+
+            if margin is None and edge.stats:
+                margin = edge.stats.win_margin(self.is_white)
+                if child_node and child_node.terminal_win_margin is None:
+                    child_node.terminal_win_margin = margin
+                    cache[child_node.key] = margin
+
+            if margin is None:
+                continue
+
+            weight = float(edge.stats.total_games) if edge.stats else 0.0
+            child_values.append((margin, weight))
+            total_weight += weight
+
+        if not child_values:
+            node.terminal_win_margin = None
+            cache[node.key] = None
+            return None
+
+        if node.is_player_turn:
+            terminal_value = max(margin for margin, _ in child_values)
+        else:
+            if total_weight > 0:
+                terminal_value = (
+                    sum(margin * weight for margin, weight in child_values)
+                    / total_weight
+                )
+            else:
+                terminal_value = sum(margin for margin, _ in child_values) / len(
+                    child_values
+                )
+
+        node.terminal_win_margin = terminal_value
+        cache[node.key] = terminal_value
+        return terminal_value
+
+    def compute_terminal_win_margins(self, roots: list[RepertoireNode]) -> None:
+        cache: dict[str, float | None] = {}
+        for root in roots:
+            self._compute_terminal_win_margin(root, cache)
 
     def build_repertoire(self) -> list[RepertoireLine]:
         lines: list[RepertoireLine] = []

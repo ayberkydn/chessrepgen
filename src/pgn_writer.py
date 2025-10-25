@@ -25,7 +25,15 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
 
     win_margin = stats.win_margin(is_white) * 100
 
-    return f"WM: {win_margin:.2f}"
+    parts = [f"WM: {win_margin:.2f}"]
+
+    child_margin = (
+        getattr(edge.child, "terminal_win_margin", None) if edge.child else None
+    )
+    if child_margin is not None:
+        parts.append(f"TWM: {child_margin * 100:.2f}")
+
+    return ", ".join(parts)
 
 
 class PGNWriter:
