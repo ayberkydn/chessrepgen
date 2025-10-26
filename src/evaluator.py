@@ -89,6 +89,16 @@ class MoveEvaluator:
     ) -> list[MoveStats]:
         moves = []
 
+        # Log position evaluation start
+        turn_type = "Player" if is_player_turn else "Opponent"
+        logger.debug(
+            "Evaluating position for %s turn at depth %d - Lichess data: %s, Reference data: %s",
+            turn_type,
+            depth,
+            "available" if lichess_stats else "unavailable",
+            "available" if player_reference_stats else "unavailable",
+        )
+
         if is_player_turn and lichess_stats and lichess_stats.get("moves"):
             # For player moves: filter by reference popularity
             if not player_reference_stats or not player_reference_stats.get("moves"):
@@ -159,6 +169,15 @@ class MoveEvaluator:
                 if best_margin - margin <= tolerance:
                     moves.append(move_stats)
 
+            # Log player move filtering results
+            logger.debug(
+                "Player move filtering: %d total Lichess moves, %d passed reference filter, %d passed winrate tolerance %.1f%%",
+                len(lichess_stats.get("moves", [])),
+                len(candidate_moves),
+                len(moves),
+                tolerance * 100,
+            )
+
             moves.sort(
                 key=lambda m: (m.win_margin(self.is_white), m.total_games),
                 reverse=True,
@@ -191,6 +210,8 @@ class MoveEvaluator:
                     if popularity >= popularity_threshold:
                         moves.append(move_stats)
 
+            # Log opponent move filtering results
+            initial_moves_count = len(lichess_moves)
             if not moves and lichess_moves:
                 fallback_count = getattr(self.config, "opponent_fallback_count", 1)
                 if fallback_count > 0:
@@ -207,6 +228,30 @@ class MoveEvaluator:
                         popularity_threshold * 100,
                         fallback_count,
                     )
+
+                logger.debug(
+                    "Opponent move filtering: %d total moves, %d met threshold %.1f%%, %d after fallback",
+                    initial_moves_count,
+                    len(
+                        [
+                            m
+                            for m in lichess_moves.values()
+                            if (m.total_games / lichess_total_for_popularity)
+                            >= popularity_threshold
+                        ]
+                    )
+                    if lichess_total_for_popularity > 0
+                    else 0,
+                    popularity_threshold * 100,
+                    len(moves),
+                )
+            else:
+                logger.debug(
+                    "Opponent move filtering: %d total moves, %d met threshold %.1f%%",
+                    initial_moves_count,
+                    len(moves),
+                    popularity_threshold * 100,
+                )
 
             moves.sort(key=lambda m: m.total_games, reverse=True)
             return moves[:10]

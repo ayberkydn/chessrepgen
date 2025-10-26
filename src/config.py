@@ -23,6 +23,7 @@ class Config:
     # Minimum master games required before falling back to high-rating Explorer data
     min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
+    highrating_fallback: bool = True  # Whether to fall back to high-rating data when master games are insufficient
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
     include_comments: bool = True  # Toggle for PGN comments
@@ -35,6 +36,7 @@ class Config:
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
     )
+    prune_non_best_moves: bool = False  # Prune non-best player moves after evaluation
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Config":
@@ -154,7 +156,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--min-highrating-popularity",
         type=float,
-        help="Minimum popularity for player moves in master/high-rating reference games (0-1)",
+        help="Minimum popularity for player moves in master/high-rating reference games (0-1, used only when highrating_fallback is enabled)",
     )
 
     parser.add_argument(
@@ -172,7 +174,21 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--min-highrating-games",
         type=int,
-        help="Minimum master games required before falling back to high-rating reference data",
+        help="Minimum master games required (if highrating_fallback is enabled, falls back to high-rating data below this threshold)",
+    )
+
+    parser.add_argument(
+        "--highrating-fallback",
+        dest="highrating_fallback",
+        action="store_true",
+        help="Enable fallback to high-rating data when master games are insufficient (default: True)",
+    )
+
+    parser.add_argument(
+        "--no-highrating-fallback",
+        dest="highrating_fallback",
+        action="store_false",
+        help="Disable fallback to high-rating data when master games are insufficient",
     )
 
     # Backward compatibility for legacy flags
@@ -226,7 +242,23 @@ def parse_arguments() -> argparse.Namespace:
         help="Disable HTTP proxies when contacting Lichess",
     )
 
-    parser.set_defaults(use_proxy=None)
+    parser.add_argument(
+        "--prune-non-best-moves",
+        dest="prune_non_best_moves",
+        action="store_true",
+        help="Prune non-best player moves after terminal margins are computed",
+    )
+
+    parser.add_argument(
+        "--no-prune-non-best-moves",
+        dest="prune_non_best_moves",
+        action="store_false",
+        help="Keep all player moves even if they are suboptimal",
+    )
+
+    parser.set_defaults(
+        use_proxy=None, prune_non_best_moves=None, highrating_fallback=True
+    )
 
     return parser.parse_args()
 

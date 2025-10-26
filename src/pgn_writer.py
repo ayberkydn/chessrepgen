@@ -14,24 +14,26 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     """Extract win/draw/black statistics and format them for PGN comments.
 
     Returns formatted comment like: W:51.2, D:15.0, B:33.8, WinMargin:12.34
+    Also includes pruning information if the move was pruned.
     """
-    if not hasattr(edge, "stats") or not edge.stats:
-        return ""
+    parts = []
 
-    stats = edge.stats
+    # Pruning comments removed
 
-    if not hasattr(stats, "win_margin"):
-        return ""
+    # Add statistics if available
+    if hasattr(edge, "stats") and edge.stats and hasattr(edge.stats, "win_margin"):
+        win_margin = edge.stats.win_margin(is_white) * 100
+        parts.append(f"WM: {win_margin:.2f}")
 
-    win_margin = stats.win_margin(is_white) * 100
+        # Get terminal win margin from child or from edge (for pruned nodes)
+        child_margin = (
+            getattr(edge.child, "terminal_win_margin", None) if edge.child else None
+        )
+        if child_margin is None:
+            child_margin = getattr(edge, "terminal_win_margin", None)
 
-    parts = [f"WM: {win_margin:.2f}"]
-
-    child_margin = (
-        getattr(edge.child, "terminal_win_margin", None) if edge.child else None
-    )
-    if child_margin is not None:
-        parts.append(f"TWM: {child_margin * 100:.2f}")
+        if child_margin is not None:
+            parts.append(f"TWM: {child_margin * 100:.2f}")
 
     return ", ".join(parts)
 
@@ -55,7 +57,59 @@ class PGNWriter:
             # Skip all termination reasons and other comments
             return
 
-        for i, edge in enumerate(node.edges):
+        # Sort moves differently based on whose turn it is:
+        # - Player moves: Sort by terminal win margin (best for repertoire player)
+        # - Opponent moves: Sort by popularity (most common opponent responses)
+
+        # Log any edges with None terminal win margins for debugging (player moves only)
+        if node.is_player_turn:
+            for edge in node.edges:
+                child_twm = (
+                    getattr(edge.child, "terminal_win_margin", None)
+                    if edge.child
+                    else None
+                )
+                edge_twm = getattr(edge, "terminal_win_margin", None)
+                if child_twm is None and edge_twm is None:
+                    logger.debug(
+                        "PGN_SORT: Player edge has None terminal win margin. "
+                        "Move: %s, Child exists: %s, Edge stats available: %s, "
+                        "Node FEN: %s, Edge is terminal: %s",
+                        edge.move_san,
+                        edge.child is not None,
+                        edge.stats is not None if edge.stats else False,
+                        node.board.fen(),
+                        edge.is_terminal,
+                    )
+
+        if node.is_player_turn:
+            # Player moves: Sort by terminal win margin (descending), then by popularity
+            sorted_edges = sorted(
+                node.edges,
+                key=lambda e: (
+                    # Get terminal win margin from child or edge (for pruned nodes), default to -1 for None
+                    (
+                        (
+                            getattr(e.child, "terminal_win_margin", None)
+                            if e.child
+                            else None
+                        )
+                        or getattr(e, "terminal_win_margin", None)
+                        or -1
+                    ),
+                    e.stats.total_games if e.stats else 0,
+                ),
+                reverse=True,
+            )
+        else:
+            # Opponent moves: Sort by popularity (total games) descending
+            sorted_edges = sorted(
+                node.edges,
+                key=lambda e: e.stats.total_games if e.stats else 0,
+                reverse=True,
+            )
+
+        for i, edge in enumerate(sorted_edges):
             if edge.move:
                 if i == 0 and is_main_line:
                     new_node = game_node.add_main_variation(edge.move)

@@ -46,6 +46,7 @@ class RepertoireEdge:
     termination_reason: str | None = None
     is_terminal: bool = False
     is_best_continuation: bool = False
+    terminal_win_margin: float | None = None
 
 
 @dataclass
@@ -57,6 +58,42 @@ class RepertoireLine:
 
 
 class RepertoireBuilder:
+    def _reconstruct_move_sequence(self, node: RepertoireNode) -> str:
+        """Reconstruct the move sequence from start position to the given node."""
+        try:
+            # Use the board's move stack to get the actual sequence of moves
+            board_copy = node.board.copy()
+
+            # If the board has no moves played, it's the starting position
+            if not board_copy.move_stack:
+                return "starting position"
+
+            # Get the move history and convert to SAN notation
+            temp_board = chess.Board()
+            moves_san = []
+
+            for move in board_copy.move_stack:
+                san = temp_board.san(move)
+                moves_san.append(san)
+                temp_board.push(move)
+
+            # Format the move sequence
+            if len(moves_san) <= 6:
+                return f"{' '.join(moves_san)}"
+            else:
+                # Show first 3 moves, last 3 moves with ellipsis
+                return f"{' '.join(moves_san[:3])} ... {' '.join(moves_san[-3:])}"
+
+        except Exception as e:
+            # Fallback to a simple representation if reconstruction fails
+            try:
+                ply_count = node.board.fullmove_number * 2 - (
+                    1 if node.board.turn == chess.WHITE else 0
+                )
+                return f"ply {ply_count} ({node.board.fen()[:8]}...)"
+            except Exception:
+                return f"position {node.key[:8]}..."
+
     def __init__(self, config, side: str):
         self.config = config
         self.side = side
@@ -185,6 +222,9 @@ class RepertoireBuilder:
         return moves
 
     def get_position_data(self, fen: str) -> dict:
+        # Log position data fetching
+        logger.debug("Fetching position data for FEN: %s", fen[:20] + "...")
+
         cached_lichess_stats = self.cache.get_lichess_stats(
             fen,
             self.config.ratings,
@@ -204,8 +244,23 @@ class RepertoireBuilder:
         player_reference_source: str | None = None
         combined_stats: dict | None = None
 
+        # Log cache status
+        cache_status = []
+        if cached_lichess_stats:
+            cache_status.append("Lichess")
+        if cached_master_stats:
+            cache_status.append("Master")
+        if cached_highrating_stats:
+            cache_status.append("High-rating")
+
+        if cache_status:
+            logger.debug("Cache hit for %s data", ", ".join(cache_status))
+        else:
+            logger.debug("Cache miss - fetching from API")
+
         if not cached_lichess_stats:
             try:
+                logger.debug("Fetching Lichess explorer data for position...")
                 api_data = self.client.get_position_stats(
                     fen,
                     self.config.ratings,
@@ -216,6 +271,7 @@ class RepertoireBuilder:
                 api_data = None
             if api_data and api_data.get("lichess"):
                 lichess_stats = api_data["lichess"]
+                logger.debug("Successfully fetched and cached Lichess data")
                 self.cache.set_lichess_stats(
                     fen,
                     lichess_stats,
@@ -225,11 +281,13 @@ class RepertoireBuilder:
 
         if not master_stats:
             try:
+                logger.debug("Fetching master games data for position...")
                 master_stats = self.client.get_master_games(fen)
             except Exception:
                 logger.exception("Failed to fetch master game data")
                 master_stats = None
             if master_stats:
+                logger.debug("Successfully fetched and cached master games data")
                 self.cache.set_master_stats(fen, master_stats)
 
         master_total = self._total_games(master_stats)
@@ -238,6 +296,14 @@ class RepertoireBuilder:
             player_reference_source = "master"
 
         if master_total < self.config.min_highrating_games:
+            if not self.config.highrating_fallback:
+                logger.debug(
+                    "Master games below threshold for %s (%s < %s) and high-rating fallback disabled - terminating position",
+                    fen,
+                    master_total,
+                    self.config.min_highrating_games,
+                )
+                return None
             if master_total > 0:
                 logger.debug(
                     "Master games below threshold for %s (%s < %s); attempting fallback",
@@ -247,6 +313,7 @@ class RepertoireBuilder:
                 )
             if not highrating_stats:
                 try:
+                    logger.debug("Fetching high-rating fallback data for position...")
                     highrating_stats = self.client.get_lichess_games(
                         fen,
                         PLAYER_POPULARITY_RATINGS,
@@ -256,6 +323,9 @@ class RepertoireBuilder:
                     logger.exception("Failed to fetch high-rating fallback data")
                     highrating_stats = None
                 if highrating_stats:
+                    logger.debug(
+                        "Successfully fetched and cached high-rating fallback data"
+                    )
                     self.cache.set_lichess_stats(
                         fen,
                         highrating_stats,
@@ -280,6 +350,18 @@ class RepertoireBuilder:
             elif highrating_stats:
                 player_reference_stats = highrating_stats
                 player_reference_source = "highrating"
+
+        # Log final data source summary
+        data_sources = []
+        if lichess_stats:
+            data_sources.append("Lichess")
+        if player_reference_stats:
+            data_sources.append(f"Reference ({player_reference_source})")
+
+        logger.debug(
+            "Position data ready - Sources: %s",
+            ", ".join(data_sources) if data_sources else "None",
+        )
 
         return {
             "lichess": lichess_stats,
@@ -350,6 +432,24 @@ class RepertoireBuilder:
         player_reference = position_stats.get("player_reference")
         depth_for_evaluator = node.min_player_depth or 0
 
+        # Log the position being analyzed with move sequence from start
+        position_description = self._reconstruct_move_sequence(node)
+        player_turn = "White" if node.is_player_turn else "Black"
+        side_indicator = (
+            "(player)"
+            if node.is_player_turn == (self.side == "white")
+            else "(opponent)"
+        )
+
+        logger.info(
+            "Analyzing position: %s - Turn: %s %s - Depth: %s - FEN: %s",
+            position_description,
+            player_turn,
+            side_indicator,
+            depth_for_evaluator,
+            node.board.fen()[:20] + "...",
+        )
+
         candidate_moves = self.evaluator.evaluate_position(
             lichess_stats,
             player_reference,
@@ -357,7 +457,36 @@ class RepertoireBuilder:
             depth_for_evaluator,
         )
 
+        # Log candidate moves being considered
+        if candidate_moves:
+            moves_info = []
+            for move in candidate_moves[:5]:  # Show top 5 moves
+                side_label = "White" if self.is_white else "Black"
+                win_margin = move.win_margin(self.is_white) * 100
+                moves_info.append(
+                    f"{move.san} ({win_margin:+.1f}%, {move.total_games} games)"
+                )
+
+            logger.info(
+                "Found %d candidate moves at %s: %s%s",
+                len(candidate_moves),
+                self._reconstruct_move_sequence(node),
+                ", ".join(moves_info),
+                "..." if len(candidate_moves) > 5 else "",
+            )
+
         if not candidate_moves:
+            logger.debug(
+                "TERMINAL_MARGINS: No candidate moves found during node expansion. "
+                "Position: %s, FEN: %s, Player turn: %s, Move depth: %s, "
+                "Position stats available: %s, Ancestors count: %d",
+                node.key,
+                node.board.fen(),
+                node.is_player_turn,
+                getattr(node, "min_player_depth", "UNKNOWN"),
+                node.position_stats is not None,
+                len(node.ancestors),
+            )
             self._set_no_candidate_moves_termination(node, node.is_player_turn)
             return
 
@@ -523,6 +652,18 @@ class RepertoireBuilder:
         highrating_stats = position_stats.get("highrating_reference")
         combined_stats = position_stats.get("combined_reference")
 
+        # Log detailed information about why no candidate moves were found
+        logger.debug(
+            "TERMINAL_MARGINS: No candidate moves found for position. "
+            "Position: %s, FEN: %s, Player turn: %s, "
+            "Lichess moves available: %s, Player reference source: %s",
+            node.key,
+            node.board.fen(),
+            is_player_turn,
+            bool(lichess_stats and lichess_stats.get("moves")),
+            player_reference_source,
+        )
+
         if is_player_turn:
             total_reference_games = self._total_games(player_reference_stats)
             master_total = self._total_games(master_stats)
@@ -607,6 +748,14 @@ class RepertoireBuilder:
             return cached
 
         if not node.edges:
+            logger.debug(
+                "TERMINAL_MARGINS: Node has no edges - setting terminal_win_margin to None. "
+                "Position: %s, FEN: %s, Player turn: %s, Move depth: %s",
+                node.key,
+                node.board.fen(),
+                node.is_player_turn,
+                getattr(node, "min_player_depth", "UNKNOWN"),
+            )
             node.terminal_win_margin = None
             cache[node.key] = None
             return None
@@ -643,6 +792,16 @@ class RepertoireBuilder:
             total_weight += weight
 
         if not child_values:
+            logger.debug(
+                "TERMINAL_MARGINS: All child nodes have None terminal margins - setting parent to None. "
+                "Position: %s, FEN: %s, Player turn: %s, Move depth: %s, "
+                "Number of children: %d",
+                node.key,
+                node.board.fen(),
+                node.is_player_turn,
+                getattr(node, "min_player_depth", "UNKNOWN"),
+                len(node.edges),
+            )
             node.terminal_win_margin = None
             cache[node.key] = None
             return None
@@ -668,6 +827,81 @@ class RepertoireBuilder:
         cache: dict[str, float | None] = {}
         for root in roots:
             self._compute_terminal_win_margin(root, cache)
+        if getattr(self.config, "prune_non_best_moves", False):
+            self._prune_to_best_edges(roots)
+
+    def _prune_to_best_edges(self, roots: list[RepertoireNode]) -> None:
+        visited: set[str] = set()
+        for root in roots:
+            self._prune_node(root, visited)
+
+    def _prune_node(
+        self,
+        node: RepertoireNode,
+        visited: set[str],
+    ) -> None:
+        if node.key in visited:
+            return
+
+        visited.add(node.key)
+
+        if node.is_player_turn and node.edges:
+            best_edge: RepertoireEdge | None = None
+            best_margin: float | None = None
+
+            for edge in node.edges:
+                child_margin = edge.child.terminal_win_margin if edge.child else None
+                if child_margin is None:
+                    logger.debug(
+                        "TERMINAL_MARGINS: Edge has None child margin during pruning. "
+                        "Position: %s, Move: %s (%s), Child exists: %s, "
+                        "Child terminal margin: %s, Edge stats available: %s",
+                        node.key,
+                        edge.move_san,
+                        edge.move.uci() if edge.move else "N/A",
+                        edge.child is not None,
+                        child_margin,
+                        edge.stats is not None if edge.stats else False,
+                    )
+                    continue
+                if best_margin is None or child_margin > best_margin:
+                    best_margin = child_margin
+                    best_edge = edge
+
+            if best_edge is not None:
+                for edge in node.edges:
+                    is_best = edge is best_edge
+                    edge.is_best_continuation = is_best
+                    if not is_best:
+                        if not edge.is_terminal:
+                            edge.is_terminal = True
+                        # Store terminal win margin on edge before pruning
+                        edge_terminal_margin = (
+                            edge.child.terminal_win_margin if edge.child else None
+                        )
+                        if edge_terminal_margin is None:
+                            logger.debug(
+                                "TERMINAL_MARGINS: Pruned edge will have None terminal margin. "
+                                "Position: %s, Move: %s (%s), Child FEN: %s, "
+                                "Edge was terminal: %s, Termination reason: %s",
+                                node.key,
+                                edge.move_san,
+                                edge.move.uci() if edge.move else "N/A",
+                                edge.child.board.fen() if edge.child else "NO_CHILD",
+                                edge.is_terminal,
+                                edge.termination_reason or "NONE",
+                            )
+                        edge.terminal_win_margin = edge_terminal_margin
+                        # Pruning comments removed
+                        edge.comment = None
+                        edge.termination_reason = None
+
+                        edge.child = None
+
+        for edge in node.edges:
+            child = edge.child
+            if child and not edge.is_terminal:
+                self._prune_node(child, visited)
 
     def build_repertoire(self) -> list[RepertoireLine]:
         lines: list[RepertoireLine] = []
