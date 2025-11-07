@@ -16,10 +16,12 @@ class Config:
     min_opponent_popularity: float = 0.1
     # Popularity threshold for player moves using master (or fallback) reference data
     min_highrating_popularity: float = 0.1
-    # Allow alternative player moves whose win margin is close to the best move
-    winrate_margin_tolerance: float = 0.02
+    # Allow alternative player moves whose advantage is close to the best move
+    advantage_tolerance: float = 0.02
     # Allow a looser tolerance for the side's very first move
-    first_move_winrate_margin_tolerance: float = 0.05
+    first_move_advantage_tolerance: float = 0.05
+    # Minimum popularity (relative) for a move to be considered as baseline for advantage comparison
+    min_advantage_baseline_popularity: float = 0.1
     # Minimum master games required before falling back to high-rating Explorer data
     min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
@@ -32,6 +34,9 @@ class Config:
     # Specialized thresholds for first moves
     first_move_min_opponent_popularity: float = (
         0.05  # Relaxed opponent popularity for first reply
+    )
+    first_move_min_highrating_popularity: float = (
+        0.01  # Relaxed highrating popularity for first move
     )
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
@@ -74,12 +79,15 @@ class Config:
         if not 0 <= self.min_highrating_popularity <= 1:
             raise ValueError("min_highrating_popularity must be between 0 and 1")
 
-        if not 0 <= self.winrate_margin_tolerance <= 1:
-            raise ValueError("winrate_margin_tolerance must be between 0 and 1")
+        if not 0 <= self.advantage_tolerance <= 1:
+            raise ValueError("advantage_tolerance must be between 0 and 1")
 
-        if not 0 <= self.first_move_winrate_margin_tolerance <= 1:
+        if not 0 <= self.first_move_advantage_tolerance <= 1:
+            raise ValueError("first_move_advantage_tolerance must be between 0 and 1")
+
+        if not 0 <= self.min_advantage_baseline_popularity <= 1:
             raise ValueError(
-                "first_move_winrate_margin_tolerance must be between 0 and 1"
+                "min_advantage_baseline_popularity must be between 0 and 1"
             )
 
         if self.min_highrating_games < 0:
@@ -102,6 +110,11 @@ class Config:
         if not 0 <= self.first_move_min_opponent_popularity <= 1:
             raise ValueError(
                 "first_move_min_opponent_popularity must be between 0 and 1"
+            )
+
+        if not 0 <= self.first_move_min_highrating_popularity <= 1:
+            raise ValueError(
+                "first_move_min_highrating_popularity must be between 0 and 1"
             )
 
 
@@ -160,15 +173,21 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--winrate-margin-tolerance",
+        "--advantage-tolerance",
         type=float,
-        help="Allow alternative player moves within this win-margin of the best move (0-1)",
+        help="Allow alternative player moves within this advantage of the best move (0-1)",
     )
 
     parser.add_argument(
-        "--first-move-winrate-margin-tolerance",
+        "--first-move-advantage-tolerance",
         type=float,
-        help="Allow alternative first moves within this win-margin of the best move (0-1)",
+        help="Allow alternative first moves within this advantage of the best move (0-1)",
+    )
+
+    parser.add_argument(
+        "--min-advantage-baseline-popularity",
+        type=float,
+        help="Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison",
     )
 
     parser.add_argument(
@@ -227,6 +246,12 @@ def parse_arguments() -> argparse.Namespace:
         type=float,
         help="Minimum popularity for opponent's first reply (0-1)",
     )
+    parser.add_argument(
+        "--first-move-highrating-popularity",
+        type=float,
+        dest="first_move_min_highrating_popularity",
+        help="Minimum popularity for player's first move in master/highrating reference games (0-1)",
+    )
 
     parser.add_argument(
         "--use-proxy",
@@ -246,7 +271,7 @@ def parse_arguments() -> argparse.Namespace:
         "--prune-non-best-moves",
         dest="prune_non_best_moves",
         action="store_true",
-        help="Prune non-best player moves after terminal margins are computed",
+        help="Prune non-best player moves after terminal advantages are computed",
     )
 
     parser.add_argument(

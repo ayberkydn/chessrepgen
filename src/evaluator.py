@@ -41,7 +41,7 @@ class MoveStats:
     def win_rate(self, for_white: bool) -> float:
         return self.white_win_rate if for_white else self.black_win_rate
 
-    def win_margin(self, for_white: bool) -> float:
+    def advantage(self, for_white: bool) -> float:
         """Difference between the player's and opponent's win percentages."""
         player_win_rate = self.win_rate(for_white)
         opponent_win_rate = self.win_rate(not for_white)
@@ -59,11 +59,10 @@ class MoveEvaluator:
         self.config = config
         self.is_white = side == "white"
 
-    def _opponent_popularity_threshold(self, depth: int) -> float:
+    def _opponent_popularity_threshold(self, opponent_move_count: int) -> float:
         """Return the popularity threshold for opponent moves."""
-        # Apply the relaxed threshold for the very first opponent move,
-        # accounting for initial moves already played.
-        if depth <= 1:
+        # Apply the relaxed threshold for the very first opponent move
+        if opponent_move_count == 0:
             return getattr(self.config, "first_move_min_opponent_popularity", 0.05)
 
         return self.config.min_opponent_popularity
@@ -86,6 +85,8 @@ class MoveEvaluator:
         player_reference_stats: dict | None,
         is_player_turn: bool,
         depth: int = 0,
+        player_move_count: int = 0,
+        opponent_move_count: int = 0,
     ) -> list[MoveStats]:
         moves = []
 
@@ -132,41 +133,90 @@ class MoveEvaluator:
                 if total_reference_games == 0:
                     continue
                 popularity = move_total / total_reference_games
-                if popularity >= self.config.min_highrating_popularity:
+                # Apply relaxed threshold for first player move
+                if player_move_count == 0:
+                    popularity_threshold = getattr(
+                        self.config, "first_move_min_highrating_popularity", 0.01
+                    )
+                    logger.debug(
+                        "Using first-move highrating popularity threshold %.1f%% (vs regular %.1f%%)",
+                        popularity_threshold * 100,
+                        self.config.min_highrating_popularity * 100,
+                    )
+                else:
+                    popularity_threshold = self.config.min_highrating_popularity
+
+                if popularity >= popularity_threshold:
                     allowed_moves.add(uci)
 
             if not allowed_moves:
+                # Apply relaxed threshold for first player move
+                if player_move_count == 0:
+                    popularity_threshold = getattr(
+                        self.config, "first_move_min_highrating_popularity", 0.01
+                    )
+                    logger.debug(
+                        "First move: Using relaxed highrating popularity threshold %.1f%% (vs regular %.1f%%)",
+                        popularity_threshold * 100,
+                        self.config.min_highrating_popularity * 100,
+                    )
+                else:
+                    popularity_threshold = self.config.min_highrating_popularity
+
                 logger.debug(
                     "No moves meet reference popularity threshold %.1f%%",
-                    self.config.min_highrating_popularity * 100,
+                    popularity_threshold * 100,
                 )
                 return []
 
             # Keep only moves whose popularity clears the reference filter
             candidate_moves: list[MoveStats] = []
-            best_margin: float | None = None
             for move_data in lichess_stats["moves"]:
                 uci = move_data.get("uci", "")
                 if uci in allowed_moves:
                     move_stats = self.parse_move_data(move_data)
                     candidate_moves.append(move_stats)
-                    margin = move_stats.win_margin(self.is_white)
-                    if best_margin is None or margin > best_margin:
-                        best_margin = margin
 
-            if not candidate_moves or best_margin is None:
+            if not candidate_moves:
                 return []
 
-            tolerance = getattr(self.config, "winrate_margin_tolerance", 0.0)
-            if depth <= 1:
+            # Calculate total games for popularity calculation
+            total_games = sum(m.total_games for m in candidate_moves)
+
+            # Find baseline move: best advantage among moves that meet popularity threshold
+            min_baseline_pop = getattr(
+                self.config, "min_advantage_baseline_popularity", 0.1
+            )
+            baseline_margin: float | None = None
+
+            for move_stats in candidate_moves:
+                popularity = (
+                    move_stats.total_games / total_games if total_games > 0 else 0
+                )
+                if popularity >= min_baseline_pop:
+                    margin = move_stats.advantage(self.is_white)
+                    if baseline_margin is None or margin > baseline_margin:
+                        baseline_margin = margin
+
+            # If no move meets popularity threshold, fall back to absolute best move
+            if baseline_margin is None:
+                baseline_margin = max(
+                    (m.advantage(self.is_white) for m in candidate_moves), default=None
+                )
+
+            if baseline_margin is None:
+                return []
+
+            tolerance = getattr(self.config, "advantage_tolerance", 0.0)
+            if player_move_count == 0:
                 tolerance = getattr(
                     self.config,
-                    "first_move_winrate_margin_tolerance",
+                    "first_move_advantage_tolerance",
                     tolerance,
                 )
             for move_stats in candidate_moves:
-                margin = move_stats.win_margin(self.is_white)
-                if best_margin - margin <= tolerance:
+                margin = move_stats.advantage(self.is_white)
+                if baseline_margin - margin <= tolerance:
                     moves.append(move_stats)
 
             # Log player move filtering results
@@ -179,7 +229,7 @@ class MoveEvaluator:
             )
 
             moves.sort(
-                key=lambda m: (m.win_margin(self.is_white), m.total_games),
+                key=lambda m: (m.advantage(self.is_white), m.total_games),
                 reverse=True,
             )
             return moves
@@ -203,7 +253,9 @@ class MoveEvaluator:
                     lichess_total_for_popularity += move_stats.total_games
 
             # Filter moves by Lichess popularity
-            popularity_threshold = self._opponent_popularity_threshold(depth)
+            popularity_threshold = self._opponent_popularity_threshold(
+                opponent_move_count
+            )
             if lichess_total_for_popularity > 0:
                 for uci, move_stats in lichess_moves.items():
                     popularity = move_stats.total_games / lichess_total_for_popularity

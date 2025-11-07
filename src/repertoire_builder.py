@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import logging
-import chess
-from dataclasses import dataclass, field
 from collections import deque
-from heapq import heappush, heappop
+from dataclasses import dataclass, field
+from heapq import heappop, heappush
 from itertools import count
-from lichess_client import LichessClient
+
+import chess
+
 from cache import ChessCache
 from evaluator import MoveEvaluator, MoveStats
-
+from lichess_client import LichessClient
 
 logger = logging.getLogger(__name__)
 PLAYER_POPULARITY_RATINGS = [2000, 2200, 2500]
@@ -28,7 +29,9 @@ class RepertoireNode:
     edges: list["RepertoireEdge"] = field(default_factory=list)
     ancestors: set[str] = field(default_factory=set)
     min_player_depth: int | None = None
-    terminal_win_margin: float | None = None
+    terminal_advantage: float | None = None
+    player_move_count: int = 0  # Count of player moves made from initial position
+    opponent_move_count: int = 0  # Count of opponent moves made from initial position
 
     def add_edge(self, edge: "RepertoireEdge") -> None:
         self.edges.append(edge)
@@ -46,7 +49,7 @@ class RepertoireEdge:
     termination_reason: str | None = None
     is_terminal: bool = False
     is_best_continuation: bool = False
-    terminal_win_margin: float | None = None
+    terminal_advantage: float | None = None
 
 
 @dataclass
@@ -401,6 +404,8 @@ class RepertoireBuilder:
         self,
         board: chess.Board,
         ancestors: set[str],
+        player_move_count: int = 0,
+        opponent_move_count: int = 0,
     ) -> RepertoireNode:
         key = self._position_key(board)
         existing = self.nodes_by_key.get(key)
@@ -415,6 +420,8 @@ class RepertoireBuilder:
             key=key,
             is_player_turn=(board.turn == chess.WHITE) == self.is_white,
             ancestors=set(ancestors),
+            player_move_count=player_move_count,
+            opponent_move_count=opponent_move_count,
         )
         self.nodes_by_key[key] = node
         return node
@@ -455,6 +462,8 @@ class RepertoireBuilder:
             player_reference,
             node.is_player_turn,
             depth_for_evaluator,
+            player_move_count=node.player_move_count,
+            opponent_move_count=node.opponent_move_count,
         )
 
         # Log candidate moves being considered
@@ -462,9 +471,9 @@ class RepertoireBuilder:
             moves_info = []
             for move in candidate_moves[:5]:  # Show top 5 moves
                 side_label = "White" if self.is_white else "Black"
-                win_margin = move.win_margin(self.is_white) * 100
+                advantage = move.advantage(self.is_white) * 100
                 moves_info.append(
-                    f"{move.san} ({win_margin:+.1f}%, {move.total_games} games)"
+                    f"{move.san} ({advantage:+.1f}%, {move.total_games} games)"
                 )
 
             logger.info(
@@ -517,8 +526,17 @@ class RepertoireBuilder:
                 continue
 
             child_ancestors = ancestors_with_current.copy()
+
+            # Calculate move counts for the child node
+            child_player_count = node.player_move_count + (
+                1 if node.is_player_turn else 0
+            )
+            child_opponent_count = node.opponent_move_count + (
+                0 if node.is_player_turn else 1
+            )
+
             child_node = self._get_or_create_node_from_board(
-                board_copy, child_ancestors
+                board_copy, child_ancestors, child_player_count, child_opponent_count
             )
 
             resulting_depth = depth_for_evaluator + (1 if node.is_player_turn else 0)
@@ -558,9 +576,9 @@ class RepertoireBuilder:
                     edge_reason = child_node.termination_reason
 
             side_label = "White" if self.is_white else "Black"
-            win_margin = move_stats.win_margin(self.is_white) * 100
+            advantage = move_stats.advantage(self.is_white) * 100
             comment_parts = [
-                f"{side_label} win margin: {win_margin:.1f}",
+                f"{side_label} advantage: {advantage:.1f}",
                 f"Samples: {move_stats.total_games}",
             ]
             if edge_reason:
@@ -602,10 +620,17 @@ class RepertoireBuilder:
                 else node.termination_reason
             )
 
-    def _build_graph_from_board(self, board: chess.Board) -> RepertoireNode:
+    def _build_graph_from_board(
+        self,
+        board: chess.Board,
+        initial_player_count: int = 0,
+        initial_opponent_count: int = 0,
+    ) -> RepertoireNode:
         self._reset_graph_state()
 
-        root = self._get_or_create_node_from_board(board, set())
+        root = self._get_or_create_node_from_board(
+            board, set(), initial_player_count, initial_opponent_count
+        )
         root.min_player_depth = 0
         root_stats = self._ensure_position_data(root)
 
@@ -737,26 +762,26 @@ class RepertoireBuilder:
         else:
             node.comment = reason
 
-    def _compute_terminal_win_margin(
+    def _compute_terminal_advantage(
         self,
         node: RepertoireNode,
         cache: dict[str, float | None],
     ) -> float | None:
         cached = cache.get(node.key)
         if cached is not None or node.key in cache:
-            node.terminal_win_margin = cached
+            node.terminal_advantage = cached
             return cached
 
         if not node.edges:
             logger.debug(
-                "TERMINAL_MARGINS: Node has no edges - setting terminal_win_margin to None. "
+                "TERMINAL_ADVANTAGES: Node has no edges - setting terminal_advantage to None. "
                 "Position: %s, FEN: %s, Player turn: %s, Move depth: %s",
                 node.key,
                 node.board.fen(),
                 node.is_player_turn,
                 getattr(node, "min_player_depth", "UNKNOWN"),
             )
-            node.terminal_win_margin = None
+            node.terminal_advantage = None
             cache[node.key] = None
             return None
 
@@ -767,21 +792,28 @@ class RepertoireBuilder:
             margin: float | None = None
             child_node = edge.child
             if edge.is_terminal:
-                if edge.stats:
-                    margin = edge.stats.win_margin(self.is_white)
+                # For terminal edges, calculate the weighted average advantage of the resulting position
+                if child_node:
+                    margin = self._calculate_position_advantage(child_node)
+                    if margin is not None:
+                        child_node.terminal_advantage = margin
+                        cache[child_node.key] = margin
+                # Fallback to move's own advantage if position calculation fails
+                if margin is None and edge.stats:
+                    margin = edge.stats.advantage(self.is_white)
                     if child_node:
-                        child_node.terminal_win_margin = margin
+                        child_node.terminal_advantage = margin
                         cache[child_node.key] = margin
             else:
                 if child_node:
-                    margin = self._compute_terminal_win_margin(child_node, cache)
+                    margin = self._compute_terminal_advantage(child_node, cache)
                 if margin is None and edge.stats:
-                    margin = edge.stats.win_margin(self.is_white)
+                    margin = edge.stats.advantage(self.is_white)
 
             if margin is None and edge.stats:
-                margin = edge.stats.win_margin(self.is_white)
-                if child_node and child_node.terminal_win_margin is None:
-                    child_node.terminal_win_margin = margin
+                margin = edge.stats.advantage(self.is_white)
+                if child_node and child_node.terminal_advantage is None:
+                    child_node.terminal_advantage = margin
                     cache[child_node.key] = margin
 
             if margin is None:
@@ -793,7 +825,7 @@ class RepertoireBuilder:
 
         if not child_values:
             logger.debug(
-                "TERMINAL_MARGINS: All child nodes have None terminal margins - setting parent to None. "
+                "TERMINAL_ADVANTAGES: All child nodes have None terminal advantages - setting parent to None. "
                 "Position: %s, FEN: %s, Player turn: %s, Move depth: %s, "
                 "Number of children: %d",
                 node.key,
@@ -802,7 +834,7 @@ class RepertoireBuilder:
                 getattr(node, "min_player_depth", "UNKNOWN"),
                 len(node.edges),
             )
-            node.terminal_win_margin = None
+            node.terminal_advantage = None
             cache[node.key] = None
             return None
 
@@ -819,14 +851,130 @@ class RepertoireBuilder:
                     child_values
                 )
 
-        node.terminal_win_margin = terminal_value
+        node.terminal_advantage = terminal_value
         cache[node.key] = terminal_value
         return terminal_value
 
-    def compute_terminal_win_margins(self, roots: list[RepertoireNode]) -> None:
+    def _calculate_position_advantage(self, node: RepertoireNode) -> float | None:
+        """
+        Calculate the advantage of a position as the weighted average of all possible moves.
+        This represents the expected advantage when entering this position.
+
+        Uses both Lichess data and player_reference (master/high-rating) data when available.
+
+        For testing: if position_stats is explicitly set on the node, it will be used.
+        Otherwise, position data will be fetched from the API/cache.
+        """
+        position_stats = node.position_stats
+
+        # If position_stats is None and we can't fetch data (e.g., in tests), return None
+        if position_stats is None:
+            try:
+                position_stats = self._ensure_position_data(node)
+            except Exception:
+                # In test environments without API access, this will fail gracefully
+                return None
+
+        if not position_stats:
+            return None
+
+        lichess_stats = position_stats.get("lichess")
+        player_reference_stats = position_stats.get("player_reference")
+
+        # Calculate weighted average from both data sources
+        advantages = []
+
+        # Process Lichess data
+        if lichess_stats and lichess_stats.get("moves"):
+            lichess_advantage = self._calculate_moves_weighted_advantage(
+                lichess_stats["moves"]
+            )
+            if lichess_advantage is not None:
+                lichess_total = self._total_games(lichess_stats)
+                if lichess_total > 0:
+                    advantages.append((lichess_advantage, lichess_total))
+
+        # Process player reference data (master/high-rating)
+        if player_reference_stats and player_reference_stats.get("moves"):
+            reference_advantage = self._calculate_moves_weighted_advantage(
+                player_reference_stats["moves"]
+            )
+            if reference_advantage is not None:
+                reference_total = self._total_games(player_reference_stats)
+                if reference_total > 0:
+                    advantages.append((reference_advantage, reference_total))
+
+        # Combine advantages from both sources with weighting
+        if advantages:
+            total_weight = sum(weight for _, weight in advantages)
+            if total_weight > 0:
+                weighted_advantage = (
+                    sum(adv * weight for adv, weight in advantages) / total_weight
+                )
+                return weighted_advantage
+
+        # Fall back to position's overall stats if no moves available
+        if lichess_stats:
+            total = (
+                lichess_stats.get("white", 0)
+                + lichess_stats.get("draws", 0)
+                + lichess_stats.get("black", 0)
+            )
+
+            if total > 0:
+                white_rate = lichess_stats.get("white", 0) / total
+                black_rate = lichess_stats.get("black", 0) / total
+
+                if self.is_white:
+                    return white_rate - black_rate
+                else:
+                    return black_rate - white_rate
+
+        return None
+
+    def _calculate_moves_weighted_advantage(self, moves: list[dict]) -> float | None:
+        """
+        Calculate weighted average advantage across a list of moves.
+
+        Args:
+            moves: List of move data dictionaries with white/draws/black counts
+
+        Returns:
+            Weighted average advantage, or None if no valid data
+        """
+        total_weight = 0.0
+        weighted_advantage = 0.0
+
+        for move_data in moves:
+            move_total = (
+                move_data.get("white", 0)
+                + move_data.get("draws", 0)
+                + move_data.get("black", 0)
+            )
+
+            if move_total == 0:
+                continue
+
+            white_rate = move_data.get("white", 0) / move_total
+            black_rate = move_data.get("black", 0) / move_total
+
+            if self.is_white:
+                advantage = white_rate - black_rate
+            else:
+                advantage = black_rate - white_rate
+
+            weighted_advantage += advantage * move_total
+            total_weight += move_total
+
+        if total_weight == 0:
+            return None
+
+        return weighted_advantage / total_weight
+
+    def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
         cache: dict[str, float | None] = {}
         for root in roots:
-            self._compute_terminal_win_margin(root, cache)
+            self._compute_terminal_advantage(root, cache)
         if getattr(self.config, "prune_non_best_moves", False):
             self._prune_to_best_edges(roots)
 
@@ -850,22 +998,22 @@ class RepertoireBuilder:
             best_margin: float | None = None
 
             for edge in node.edges:
-                child_margin = edge.child.terminal_win_margin if edge.child else None
-                if child_margin is None:
+                child_advantage = edge.child.terminal_advantage if edge.child else None
+                if child_advantage is None:
                     logger.debug(
-                        "TERMINAL_MARGINS: Edge has None child margin during pruning. "
+                        "TERMINAL_ADVANTAGES: Edge has None child advantage during pruning. "
                         "Position: %s, Move: %s (%s), Child exists: %s, "
-                        "Child terminal margin: %s, Edge stats available: %s",
+                        "Child terminal advantage: %s, Edge stats available: %s",
                         node.key,
                         edge.move_san,
                         edge.move.uci() if edge.move else "N/A",
                         edge.child is not None,
-                        child_margin,
+                        child_advantage,
                         edge.stats is not None if edge.stats else False,
                     )
                     continue
-                if best_margin is None or child_margin > best_margin:
-                    best_margin = child_margin
+                if best_margin is None or child_advantage > best_margin:
+                    best_margin = child_advantage
                     best_edge = edge
 
             if best_edge is not None:
@@ -875,23 +1023,23 @@ class RepertoireBuilder:
                     if not is_best:
                         if not edge.is_terminal:
                             edge.is_terminal = True
-                        # Store terminal win margin on edge before pruning
-                        edge_terminal_margin = (
-                            edge.child.terminal_win_margin if edge.child else None
+                        # Store terminal advantage on edge before pruning
+                        edge_terminal_advantage = (
+                            edge.child.terminal_advantage if edge.child else None
                         )
-                        if edge_terminal_margin is None:
+                        if edge_terminal_advantage is None:
                             logger.debug(
-                                "TERMINAL_MARGINS: Pruned edge will have None terminal margin. "
+                                "TERMINAL_ADVANTAGES: Pruned edge will have None terminal advantage. "
                                 "Position: %s, Move: %s (%s), Child FEN: %s, "
                                 "Edge was terminal: %s, Termination reason: %s",
                                 node.key,
                                 edge.move_san,
                                 edge.move.uci() if edge.move else "N/A",
-                                edge.child.board.fen() if edge.child else "NO_CHILD",
+                                edge.child.board.fen() if edge.child else "N/A",
                                 edge.is_terminal,
                                 edge.termination_reason or "NONE",
                             )
-                        edge.terminal_win_margin = edge_terminal_margin
+                        edge.terminal_advantage = edge_terminal_advantage
                         # Pruning comments removed
                         edge.comment = None
                         edge.termination_reason = None
@@ -919,10 +1067,24 @@ class RepertoireBuilder:
                 board = chess.Board()
                 initial_moves = self.parse_initial_moves(initial_moves_str)
 
+                # Count initial moves for each side
+                initial_player_count = 0
+                initial_opponent_count = 0
+                temp_board = chess.Board()
+
                 for move in initial_moves:
+                    # Check whose turn it is before the move
+                    is_player_move = (temp_board.turn == chess.WHITE) == self.is_white
+                    if is_player_move:
+                        initial_player_count += 1
+                    else:
+                        initial_opponent_count += 1
+                    temp_board.push(move)
                     board.push(move)
 
-                root = self._build_graph_from_board(board)
+                root = self._build_graph_from_board(
+                    board, initial_player_count, initial_opponent_count
+                )
                 if root:
                     lines.append(RepertoireLine(initial_moves_str, root))
 

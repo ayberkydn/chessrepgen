@@ -1,11 +1,10 @@
-import chess
-import chess.pgn
 import logging
 import re
-
 from datetime import datetime
 from io import StringIO
 
+import chess
+import chess.pgn
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     """Extract win/draw/black statistics and format them for PGN comments.
 
-    Returns formatted comment like: W:51.2, D:15.0, B:33.8, WinMargin:12.34
+    Returns formatted comment like: W:51.2, D:15.0, B:33.8, Advantage:12.34
     Also includes pruning information if the move was pruned.
     """
     parts = []
@@ -21,19 +20,19 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     # Pruning comments removed
 
     # Add statistics if available
-    if hasattr(edge, "stats") and edge.stats and hasattr(edge.stats, "win_margin"):
-        win_margin = edge.stats.win_margin(is_white) * 100
-        parts.append(f"WM: {win_margin:.2f}")
+    if hasattr(edge, "stats") and edge.stats and hasattr(edge.stats, "advantage"):
+        advantage = edge.stats.advantage(is_white) * 100
+        parts.append(f"Adv: {advantage:.2f}")
 
-        # Get terminal win margin from child or from edge (for pruned nodes)
-        child_margin = (
-            getattr(edge.child, "terminal_win_margin", None) if edge.child else None
+        # Get terminal advantage from child or from edge (for pruned nodes)
+        child_advantage = (
+            getattr(edge.child, "terminal_advantage", None) if edge.child else None
         )
-        if child_margin is None:
-            child_margin = getattr(edge, "terminal_win_margin", None)
+        if child_advantage is None:
+            child_advantage = getattr(edge, "terminal_advantage", None)
 
-        if child_margin is not None:
-            parts.append(f"TWM: {child_margin * 100:.2f}")
+        if child_advantage is not None:
+            parts.append(f"TAdv: {child_advantage * 100:.2f}")
 
     return ", ".join(parts)
 
@@ -58,21 +57,21 @@ class PGNWriter:
             return
 
         # Sort moves differently based on whose turn it is:
-        # - Player moves: Sort by terminal win margin (best for repertoire player)
+        # - Player moves: Sort by terminal advantage (best for repertoire player)
         # - Opponent moves: Sort by popularity (most common opponent responses)
 
-        # Log any edges with None terminal win margins for debugging (player moves only)
+        # Log any edges with None terminal advantages for debugging (player moves only)
         if node.is_player_turn:
             for edge in node.edges:
                 child_twm = (
-                    getattr(edge.child, "terminal_win_margin", None)
+                    getattr(edge.child, "terminal_advantage", None)
                     if edge.child
                     else None
                 )
-                edge_twm = getattr(edge, "terminal_win_margin", None)
+                edge_twm = getattr(edge, "terminal_advantage", None)
                 if child_twm is None and edge_twm is None:
                     logger.debug(
-                        "PGN_SORT: Player edge has None terminal win margin. "
+                        "PGN_SORT: Player edge has None terminal advantage. "
                         "Move: %s, Child exists: %s, Edge stats available: %s, "
                         "Node FEN: %s, Edge is terminal: %s",
                         edge.move_san,
@@ -83,20 +82,20 @@ class PGNWriter:
                     )
 
         if node.is_player_turn:
-            # Player moves: Sort by terminal win margin (descending), then by popularity
+            # Player moves: Sort by terminal advantage (descending), then by popularity
             sorted_edges = sorted(
                 node.edges,
                 key=lambda e: (
-                    # Get terminal win margin from child or edge (for pruned nodes), default to -1 for None
+                    # Get terminal advantage from child or edge (for pruned nodes), default to -1 for None
                     (
                         (
-                            getattr(e.child, "terminal_win_margin", None)
+                            getattr(e.child, "terminal_advantage", None)
                             if e.child
                             else None
                         )
-                        or getattr(e, "terminal_win_margin", None)
-                        or -1
-                    ),
+                        or getattr(e, "terminal_advantage", None)
+                    )
+                    or -1,
                     e.stats.total_games if e.stats else 0,
                 ),
                 reverse=True,
@@ -151,7 +150,7 @@ class PGNWriter:
         game_node = game
 
         initial_moves = initial_moves_str.strip().split()
-        for move_str in initial_moves:
+        for i, move_str in enumerate(initial_moves):
             try:
                 move = board.parse_san(move_str)
             except:
@@ -163,6 +162,19 @@ class PGNWriter:
 
             board.push(move)
             game_node = game_node.add_main_variation(move)
+
+            # Add terminal advantage comment to the last initial move
+            is_last_initial_move = i == len(initial_moves) - 1
+            if is_last_initial_move and self.include_comments:
+                if root_node.terminal_advantage is not None:
+                    game_node.comment = (
+                        f"TAdv: {root_node.terminal_advantage * 100:.2f}"
+                    )
+                else:
+                    logger.debug(
+                        "Root node has no terminal advantage for initial moves: %s",
+                        initial_moves_str,
+                    )
 
         self.node_to_pgn_variation(root_node, game_node)
 
@@ -201,6 +213,14 @@ class PGNWriter:
     def get_statistics_summary(
         self, roots: list, initial_moves: list[str] | None = None
     ) -> str:
+        if initial_moves is None:
+            # Fallback for backward compatibility
+            initial_moves = getattr(
+                self.config,
+                "initial_moves_white" if self.is_white else "initial_moves_black",
+                [],
+            )
+
         total_positions = 0
         total_variations = 0
         max_depth_reached = 0
@@ -222,9 +242,25 @@ class PGNWriter:
         for root in roots:
             count_nodes(root)
 
+        # Build initial moves summary
+        initial_moves_summary = "\nInitial Moves Summary:\n----------------------\n"
+        for i, root in enumerate(roots):
+            initial_moves_str = (
+                initial_moves[i] if initial_moves and i < len(initial_moves) else "?"
+            )
+            terminal_adv = root.terminal_advantage
+            if terminal_adv is not None:
+                terminal_adv_pct = terminal_adv * 100
+                initial_moves_summary += f"{i + 1}. {initial_moves_str}: Terminal Advantage: {terminal_adv_pct:+.2f}%\n"
+            else:
+                initial_moves_summary += (
+                    f"{i + 1}. {initial_moves_str}: Terminal Advantage: N/A\n"
+                )
+
         summary = f"""
 Repertoire Statistics:
-----------------------
+----------------------{initial_moves_summary}
+Overall Statistics:
 Total positions analyzed: {total_positions}
 Total variations: {total_variations}
 Maximum depth reached: {max_depth_reached}

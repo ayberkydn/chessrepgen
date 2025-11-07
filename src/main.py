@@ -98,7 +98,7 @@ def run_for_side(config, side: str, initial_moves):
     writer = PGNWriter(side_config, side=side)
     output_path = _output_path_for_side(config.output_file, side)
     if roots:
-        builder.compute_terminal_win_margins(roots)
+        builder.compute_terminal_advantages(roots)
     logger.info(f"Writing {side} repertoire to {output_path}...")
     writer.write_repertoire(roots, output_path, realized_initial_moves)
 

@@ -1,6 +1,8 @@
 initial_moves_white:
-  # - "e4"
-  - ""
+  - d4
+  - e4
+  # - Nf3
+  # - ""
 
 initial_moves_black:
   # - ""
@@ -10,34 +12,39 @@ time_control:
   - rapid
   - blitz
 
+#1600 1800 acik kapali yapildi
 ratings:
-  - 1600
-  - 1800
+  # - 1600
+  # - 1800
   - 2000
   - 2200
   - 2500
 
-depth: 6
+output_file: repertoire.pgn
 
-min_opponent_popularity: 0.125
-first_move_min_opponent_popularity: 0.03
+depth: 5
 
-min_highrating_popularity: 0.005
+first_move_min_opponent_popularity: 0.04
+min_opponent_popularity: 0.04
 
-winrate_margin_tolerance: 0.015
-first_move_winrate_margin_tolerance: 0.05
+first_move_min_highrating_popularity: 0.01 #0.02
+min_highrating_popularity: 0.01 #0.2
+
+first_move_advantage_tolerance: 0.03
+advantage_tolerance: 0.03
+
+# Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison
+# This ensures we compare against statistically significant moves, not outliers
+min_advantage_baseline_popularity: 0.1
 
 # Minimum number of master games before using high-rating fallback data
-min_highrating_games: 500
+min_highrating_games: 200
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 1000
+min_lichess_games: 9000
 
 # Whether to fall back to high-rating data when master games are insufficient
-highrating_fallback: false
-
-# Output file for the repertoire
-output_file: repertoire.pgn
+highrating_fallback: true
 
 # Cache settings
 cache_file: chess_cache.db
