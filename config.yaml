@@ -1,6 +1,6 @@
 initial_moves_white:
   - d4
-  - e4
+  # - e4
   # - Nf3
   # - ""
 
@@ -24,14 +24,14 @@ output_file: repertoire.pgn
 
 depth: 5
 
-first_move_min_opponent_popularity: 0.04
-min_opponent_popularity: 0.04
+first_move_min_opponent_popularity: 0.03
+min_opponent_popularity: 0.03
 
-first_move_min_highrating_popularity: 0.01 #0.02
-min_highrating_popularity: 0.01 #0.2
+first_move_min_highrating_popularity: 0.02 #0.02
+min_highrating_popularity: 0.02 #0.2
 
-first_move_advantage_tolerance: 0.03
-advantage_tolerance: 0.03
+first_move_advantage_tolerance: 0.015
+advantage_tolerance: 0.015
 
 # Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison
 # This ensures we compare against statistically significant moves, not outliers
