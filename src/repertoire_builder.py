@@ -30,8 +30,6 @@ class RepertoireNode:
     ancestors: set[str] = field(default_factory=set)
     min_player_depth: int | None = None
     terminal_advantage: float | None = None
-    player_move_count: int = 0  # Count of player moves made from initial position
-    opponent_move_count: int = 0  # Count of opponent moves made from initial position
 
     def add_edge(self, edge: "RepertoireEdge") -> None:
         self.edges.append(edge)
@@ -404,8 +402,6 @@ class RepertoireBuilder:
         self,
         board: chess.Board,
         ancestors: set[str],
-        player_move_count: int = 0,
-        opponent_move_count: int = 0,
     ) -> RepertoireNode:
         key = self._position_key(board)
         existing = self.nodes_by_key.get(key)
@@ -420,8 +416,6 @@ class RepertoireBuilder:
             key=key,
             is_player_turn=(board.turn == chess.WHITE) == self.is_white,
             ancestors=set(ancestors),
-            player_move_count=player_move_count,
-            opponent_move_count=opponent_move_count,
         )
         self.nodes_by_key[key] = node
         return node
@@ -462,8 +456,6 @@ class RepertoireBuilder:
             player_reference,
             node.is_player_turn,
             depth_for_evaluator,
-            player_move_count=node.player_move_count,
-            opponent_move_count=node.opponent_move_count,
         )
 
         # Log candidate moves being considered
@@ -527,16 +519,8 @@ class RepertoireBuilder:
 
             child_ancestors = ancestors_with_current.copy()
 
-            # Calculate move counts for the child node
-            child_player_count = node.player_move_count + (
-                1 if node.is_player_turn else 0
-            )
-            child_opponent_count = node.opponent_move_count + (
-                0 if node.is_player_turn else 1
-            )
-
             child_node = self._get_or_create_node_from_board(
-                board_copy, child_ancestors, child_player_count, child_opponent_count
+                board_copy, child_ancestors
             )
 
             resulting_depth = depth_for_evaluator + (1 if node.is_player_turn else 0)
@@ -623,13 +607,12 @@ class RepertoireBuilder:
     def _build_graph_from_board(
         self,
         board: chess.Board,
-        initial_player_count: int = 0,
-        initial_opponent_count: int = 0,
     ) -> RepertoireNode:
         self._reset_graph_state()
 
         root = self._get_or_create_node_from_board(
-            board, set(), initial_player_count, initial_opponent_count
+            board,
+            set(),
         )
         root.min_player_depth = 0
         root_stats = self._ensure_position_data(root)
@@ -1067,24 +1050,10 @@ class RepertoireBuilder:
                 board = chess.Board()
                 initial_moves = self.parse_initial_moves(initial_moves_str)
 
-                # Count initial moves for each side
-                initial_player_count = 0
-                initial_opponent_count = 0
-                temp_board = chess.Board()
-
                 for move in initial_moves:
-                    # Check whose turn it is before the move
-                    is_player_move = (temp_board.turn == chess.WHITE) == self.is_white
-                    if is_player_move:
-                        initial_player_count += 1
-                    else:
-                        initial_opponent_count += 1
-                    temp_board.push(move)
                     board.push(move)
 
-                root = self._build_graph_from_board(
-                    board, initial_player_count, initial_opponent_count
-                )
+                root = self._build_graph_from_board(board)
                 if root:
                     lines.append(RepertoireLine(initial_moves_str, root))
 

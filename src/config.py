@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import yaml
 import os
 from dataclasses import dataclass, field
+
+import yaml
 
 
 @dataclass
@@ -18,8 +19,6 @@ class Config:
     min_highrating_popularity: float = 0.1
     # Allow alternative player moves whose advantage is close to the best move
     advantage_tolerance: float = 0.02
-    # Allow a looser tolerance for the side's very first move
-    first_move_advantage_tolerance: float = 0.05
     # Minimum popularity (relative) for a move to be considered as baseline for advantage comparison
     min_advantage_baseline_popularity: float = 0.1
     # Minimum master games required before falling back to high-rating Explorer data
@@ -31,13 +30,6 @@ class Config:
     include_comments: bool = True  # Toggle for PGN comments
     use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
     side: str | None = None  # Active side during analysis (set at runtime)
-    # Specialized thresholds for first moves
-    first_move_min_opponent_popularity: float = (
-        0.05  # Relaxed opponent popularity for first reply
-    )
-    first_move_min_highrating_popularity: float = (
-        0.01  # Relaxed highrating popularity for first move
-    )
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
     )
@@ -82,9 +74,6 @@ class Config:
         if not 0 <= self.advantage_tolerance <= 1:
             raise ValueError("advantage_tolerance must be between 0 and 1")
 
-        if not 0 <= self.first_move_advantage_tolerance <= 1:
-            raise ValueError("first_move_advantage_tolerance must be between 0 and 1")
-
         if not 0 <= self.min_advantage_baseline_popularity <= 1:
             raise ValueError(
                 "min_advantage_baseline_popularity must be between 0 and 1"
@@ -106,16 +95,6 @@ class Config:
                 raise ValueError(
                     f"Invalid time control: {tc}. Must be one of {valid_time_controls}"
                 )
-
-        if not 0 <= self.first_move_min_opponent_popularity <= 1:
-            raise ValueError(
-                "first_move_min_opponent_popularity must be between 0 and 1"
-            )
-
-        if not 0 <= self.first_move_min_highrating_popularity <= 1:
-            raise ValueError(
-                "first_move_min_highrating_popularity must be between 0 and 1"
-            )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -179,12 +158,6 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--first-move-advantage-tolerance",
-        type=float,
-        help="Allow alternative first moves within this advantage of the best move (0-1)",
-    )
-
-    parser.add_argument(
         "--min-advantage-baseline-popularity",
         type=float,
         help="Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison",
@@ -239,18 +212,6 @@ def parse_arguments() -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
         help="Set logging level (default: INFO)",
-    )
-
-    parser.add_argument(
-        "--first-move-opponent-popularity",
-        type=float,
-        help="Minimum popularity for opponent's first reply (0-1)",
-    )
-    parser.add_argument(
-        "--first-move-highrating-popularity",
-        type=float,
-        dest="first_move_min_highrating_popularity",
-        help="Minimum popularity for player's first move in master/highrating reference games (0-1)",
     )
 
     parser.add_argument(
