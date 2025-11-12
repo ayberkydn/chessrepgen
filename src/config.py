@@ -24,6 +24,9 @@ class Config:
     # Minimum master games required before falling back to high-rating Explorer data
     min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
+    postprune_min_lichess_games: int = (
+        0  # Minimum Lichess games to keep a move after building the tree
+    )
     highrating_fallback: bool = True  # Whether to fall back to high-rating data when master games are insufficient
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
@@ -45,6 +48,7 @@ class Config:
                     key_map = {
                         "min_master_popularity": "min_highrating_popularity",
                         "min_master_games": "min_highrating_games",
+                        "postprune_min_licess_games": "postprune_min_lichess_games",
                     }
                     for key, value in data.items():
                         mapped_key = key_map.get(key, key)
@@ -81,6 +85,9 @@ class Config:
 
         if self.min_highrating_games < 0:
             raise ValueError("min_highrating_games must be non-negative")
+
+        if self.postprune_min_lichess_games < 0:
+            raise ValueError("postprune_min_lichess_games must be non-negative")
 
         valid_time_controls = [
             "ultraBullet",
@@ -168,6 +175,11 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         help="Minimum master games required (if highrating_fallback is enabled, falls back to high-rating data below this threshold)",
     )
+    parser.add_argument(
+        "--postprune-min-lichess-games",
+        type=int,
+        help="Minimum Lichess games required to keep a move after repertoire generation",
+    )
 
     parser.add_argument(
         "--highrating-fallback",
@@ -240,6 +252,13 @@ def parse_arguments() -> argparse.Namespace:
         dest="prune_non_best_moves",
         action="store_false",
         help="Keep all player moves even if they are suboptimal",
+    )
+
+    parser.add_argument(
+        "--postprune-min-licess-games",
+        type=int,
+        dest="postprune_min_lichess_games",
+        help=argparse.SUPPRESS,
     )
 
     parser.set_defaults(

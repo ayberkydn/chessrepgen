@@ -5,16 +5,16 @@ initial_moves_white:
   # - d4 c5
   # - d4 g6
   # - d4
-  - e4 e5
-  - e4 c5
-  - e4 d5
-  - e4 e6
-  - e4 c6
-  - e4 d6
-  - e4 g6
-  - e4 b6
-  - e4 Nf6
-  - e4 Nc6
+  # - e4 e5
+  - e4
+  # - e4 d5
+  # - e4 e6
+  # - e4 c6
+  # - e4 d6
+  # - e4 g6
+  # - e4 b6
+  # - e4 Nf6
+  # - e4 Nc6
   # - Nf3
 
 initial_moves_black:
@@ -44,7 +44,7 @@ output_file: repertoire.pgn
 depth: 5
 
 min_opponent_popularity: 0.01
-min_highrating_popularity: 0.005 #0.2
+min_highrating_popularity: 0.005
 advantage_tolerance: 0.015
 
 # Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison
@@ -55,7 +55,10 @@ min_advantage_baseline_popularity: 0.1
 min_highrating_games: 200
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 5000
+min_lichess_games: 10000
+
+# Minimum number of Lichess games to keep a move in the final repertoire
+postprune_min_lichess_games: 10000
 
 # Whether to fall back to high-rating data when master games are insufficient
 highrating_fallback: true

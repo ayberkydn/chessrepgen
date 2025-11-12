@@ -772,38 +772,40 @@ class RepertoireBuilder:
         total_weight = 0.0
 
         for edge in node.edges:
-            margin: float | None = None
+            advantage_value: float | None = None
             child_node = edge.child
             if edge.is_terminal:
-                # For terminal edges, calculate the weighted average advantage of the resulting position
+                # For terminal edges, calculate the weighted median advantage of the resulting position
                 if child_node:
-                    margin = self._calculate_position_advantage(child_node)
-                    if margin is not None:
-                        child_node.terminal_advantage = margin
-                        cache[child_node.key] = margin
+                    advantage_value = self._calculate_position_advantage(child_node)
+                    if advantage_value is not None:
+                        child_node.terminal_advantage = advantage_value
+                        cache[child_node.key] = advantage_value
                 # Fallback to move's own advantage if position calculation fails
-                if margin is None and edge.stats:
-                    margin = edge.stats.advantage(self.is_white)
+                if advantage_value is None and edge.stats:
+                    advantage_value = edge.stats.advantage(self.is_white)
                     if child_node:
-                        child_node.terminal_advantage = margin
-                        cache[child_node.key] = margin
+                        child_node.terminal_advantage = advantage_value
+                        cache[child_node.key] = advantage_value
             else:
                 if child_node:
-                    margin = self._compute_terminal_advantage(child_node, cache)
-                if margin is None and edge.stats:
-                    margin = edge.stats.advantage(self.is_white)
+                    advantage_value = self._compute_terminal_advantage(
+                        child_node, cache
+                    )
+                if advantage_value is None and edge.stats:
+                    advantage_value = edge.stats.advantage(self.is_white)
 
-            if margin is None and edge.stats:
-                margin = edge.stats.advantage(self.is_white)
+            if advantage_value is None and edge.stats:
+                advantage_value = edge.stats.advantage(self.is_white)
                 if child_node and child_node.terminal_advantage is None:
-                    child_node.terminal_advantage = margin
-                    cache[child_node.key] = margin
+                    child_node.terminal_advantage = advantage_value
+                    cache[child_node.key] = advantage_value
 
-            if margin is None:
+            if advantage_value is None:
                 continue
 
             weight = float(edge.stats.total_games) if edge.stats else 0.0
-            child_values.append((margin, weight))
+            child_values.append((advantage_value, weight))
             total_weight += weight
 
         if not child_values:
@@ -822,15 +824,15 @@ class RepertoireBuilder:
             return None
 
         if node.is_player_turn:
-            terminal_value = max(margin for margin, _ in child_values)
+            terminal_value = max(advantage for advantage, _ in child_values)
         else:
             if total_weight > 0:
                 terminal_value = (
-                    sum(margin * weight for margin, weight in child_values)
+                    sum(advantage * weight for advantage, weight in child_values)
                     / total_weight
                 )
             else:
-                terminal_value = sum(margin for margin, _ in child_values) / len(
+                terminal_value = sum(advantage for advantage, _ in child_values) / len(
                     child_values
                 )
 
@@ -840,10 +842,9 @@ class RepertoireBuilder:
 
     def _calculate_position_advantage(self, node: RepertoireNode) -> float | None:
         """
-        Calculate the advantage of a position as the weighted average of all possible moves.
-        This represents the expected advantage when entering this position.
-
-        Uses both Lichess data and player_reference (master/high-rating) data when available.
+        Calculate the advantage of a position as the weighted median of all possible moves
+        based solely on Lichess data. This represents the expected advantage when entering
+        this position.
 
         For testing: if position_stats is explicitly set on the node, it will be used.
         Otherwise, position data will be fetched from the API/cache.
@@ -862,39 +863,13 @@ class RepertoireBuilder:
             return None
 
         lichess_stats = position_stats.get("lichess")
-        player_reference_stats = position_stats.get("player_reference")
 
-        # Calculate weighted average from both data sources
-        advantages = []
-
-        # Process Lichess data
         if lichess_stats and lichess_stats.get("moves"):
             lichess_advantage = self._calculate_moves_weighted_advantage(
                 lichess_stats["moves"]
             )
             if lichess_advantage is not None:
-                lichess_total = self._total_games(lichess_stats)
-                if lichess_total > 0:
-                    advantages.append((lichess_advantage, lichess_total))
-
-        # Process player reference data (master/high-rating)
-        if player_reference_stats and player_reference_stats.get("moves"):
-            reference_advantage = self._calculate_moves_weighted_advantage(
-                player_reference_stats["moves"]
-            )
-            if reference_advantage is not None:
-                reference_total = self._total_games(player_reference_stats)
-                if reference_total > 0:
-                    advantages.append((reference_advantage, reference_total))
-
-        # Combine advantages from both sources with weighting
-        if advantages:
-            total_weight = sum(weight for _, weight in advantages)
-            if total_weight > 0:
-                weighted_advantage = (
-                    sum(adv * weight for adv, weight in advantages) / total_weight
-                )
-                return weighted_advantage
+                return lichess_advantage
 
         # Fall back to position's overall stats if no moves available
         if lichess_stats:
@@ -917,16 +892,16 @@ class RepertoireBuilder:
 
     def _calculate_moves_weighted_advantage(self, moves: list[dict]) -> float | None:
         """
-        Calculate weighted average advantage across a list of moves.
+        Calculate weighted median advantage across a list of moves.
 
         Args:
             moves: List of move data dictionaries with white/draws/black counts
 
         Returns:
-            Weighted average advantage, or None if no valid data
+            Weighted median advantage, or None if no valid data
         """
+        weighted_moves: list[tuple[float, float]] = []
         total_weight = 0.0
-        weighted_advantage = 0.0
 
         for move_data in moves:
             move_total = (
@@ -946,20 +921,104 @@ class RepertoireBuilder:
             else:
                 advantage = black_rate - white_rate
 
-            weighted_advantage += advantage * move_total
+            weighted_moves.append((advantage, move_total))
             total_weight += move_total
 
-        if total_weight == 0:
+        if total_weight == 0 or not weighted_moves:
             return None
 
-        return weighted_advantage / total_weight
+        weighted_moves.sort(key=lambda item: item[0], reverse=True)
+        half_weight = total_weight / 2
+        cumulative = 0.0
+
+        for advantage, weight in weighted_moves:
+            cumulative += weight
+            if cumulative >= half_weight:
+                return advantage
+
+        # Fallback, should not happen unless numeric issues occur
+        return weighted_moves[-1][0]
 
     def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
         cache: dict[str, float | None] = {}
         for root in roots:
             self._compute_terminal_advantage(root, cache)
+        min_postprune_games = (
+            getattr(self.config, "postprune_min_lichess_games", 0) or 0
+        )
+        if min_postprune_games > 0:
+            pruned = self._prune_low_sample_moves(roots, min_postprune_games)
+            if pruned:
+                cache.clear()
+                for root in roots:
+                    self._compute_terminal_advantage(root, cache)
         if getattr(self.config, "prune_non_best_moves", False):
             self._prune_to_best_edges(roots)
+
+    def _prune_low_sample_moves(
+        self,
+        roots: list[RepertoireNode],
+        min_games: int,
+    ) -> bool:
+        visited: set[str] = set()
+        pruned_any = False
+        for root in roots:
+            if self._prune_low_sample_moves_recursive(root, visited, min_games):
+                pruned_any = True
+        return pruned_any
+
+    def _prune_low_sample_moves_recursive(
+        self,
+        node: RepertoireNode,
+        visited: set[str],
+        min_games: int,
+    ) -> bool:
+        if node.key in visited:
+            return False
+
+        visited.add(node.key)
+
+        if not node.edges:
+            return False
+
+        pruned_here = False
+        kept_edges: list[RepertoireEdge] = []
+
+        for edge in node.edges:
+            games = edge.stats.total_games if edge.stats else 0
+            if games < min_games:
+                move_label = edge.move_san or (edge.move.uci() if edge.move else "N/A")
+                logger.debug(
+                    "POSTPRUNE: Removing move %s with %d Lichess games "
+                    "(threshold %d) at position %s",
+                    move_label,
+                    games,
+                    min_games,
+                    node.key,
+                )
+                pruned_here = True
+                continue
+            kept_edges.append(edge)
+
+        if len(kept_edges) != len(node.edges):
+            node.edges = kept_edges
+            if not kept_edges:
+                reason = f"All moves pruned below {min_games} Lichess games"
+                if not node.termination_reason:
+                    node.termination_reason = reason
+                if node.comment:
+                    if reason not in node.comment:
+                        node.comment = f"{node.comment} | {reason}"
+                else:
+                    node.comment = reason
+
+        for edge in kept_edges:
+            child = edge.child
+            if child:
+                if self._prune_low_sample_moves_recursive(child, visited, min_games):
+                    pruned_here = True
+
+        return pruned_here
 
     def _prune_to_best_edges(self, roots: list[RepertoireNode]) -> None:
         visited: set[str] = set()
@@ -978,7 +1037,7 @@ class RepertoireBuilder:
 
         if node.is_player_turn and node.edges:
             best_edge: RepertoireEdge | None = None
-            best_margin: float | None = None
+            best_advantage: float | None = None
 
             for edge in node.edges:
                 child_advantage = edge.child.terminal_advantage if edge.child else None
@@ -995,8 +1054,8 @@ class RepertoireBuilder:
                         edge.stats is not None if edge.stats else False,
                     )
                     continue
-                if best_margin is None or child_advantage > best_margin:
-                    best_margin = child_advantage
+                if best_advantage is None or child_advantage > best_advantage:
+                    best_advantage = child_advantage
                     best_edge = edge
 
             if best_edge is not None:

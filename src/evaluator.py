@@ -159,30 +159,33 @@ class MoveEvaluator:
             min_baseline_pop = getattr(
                 self.config, "min_advantage_baseline_popularity", 0.1
             )
-            baseline_margin: float | None = None
+            baseline_advantage: float | None = None
 
             for move_stats in candidate_moves:
                 popularity = (
                     move_stats.total_games / total_games if total_games > 0 else 0
                 )
                 if popularity >= min_baseline_pop:
-                    margin = move_stats.advantage(self.is_white)
-                    if baseline_margin is None or margin > baseline_margin:
-                        baseline_margin = margin
+                    advantage_value = move_stats.advantage(self.is_white)
+                    if (
+                        baseline_advantage is None
+                        or advantage_value > baseline_advantage
+                    ):
+                        baseline_advantage = advantage_value
 
             # If no move meets popularity threshold, fall back to absolute best move
-            if baseline_margin is None:
-                baseline_margin = max(
+            if baseline_advantage is None:
+                baseline_advantage = max(
                     (m.advantage(self.is_white) for m in candidate_moves), default=None
                 )
 
-            if baseline_margin is None:
+            if baseline_advantage is None:
                 return []
 
             tolerance = getattr(self.config, "advantage_tolerance", 0.0)
             for move_stats in candidate_moves:
-                margin = move_stats.advantage(self.is_white)
-                if baseline_margin - margin <= tolerance:
+                advantage_value = move_stats.advantage(self.is_white)
+                if baseline_advantage - advantage_value <= tolerance:
                     moves.append(move_stats)
 
             # Log player move filtering results
