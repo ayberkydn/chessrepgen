@@ -19,6 +19,8 @@ class Config:
     min_highrating_popularity: float = 0.1
     # Allow alternative player moves whose advantage is close to the best move
     advantage_tolerance: float = 0.02
+    # Method to aggregate move advantages when combining explorer data
+    advantage_aggregation: str = "median"
     # Minimum popularity (relative) for a move to be considered as baseline for advantage comparison
     min_advantage_baseline_popularity: float = 0.1
     # Minimum master games required before falling back to high-rating Explorer data
@@ -88,6 +90,11 @@ class Config:
 
         if self.postprune_min_lichess_games < 0:
             raise ValueError("postprune_min_lichess_games must be non-negative")
+
+        agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
+        if agg_method not in {"mean", "median"}:
+            raise ValueError("advantage_aggregation must be either 'mean' or 'median'")
+        self.advantage_aggregation = agg_method
 
         valid_time_controls = [
             "ultraBullet",
@@ -162,6 +169,12 @@ def parse_arguments() -> argparse.Namespace:
         "--advantage-tolerance",
         type=float,
         help="Allow alternative player moves within this advantage of the best move (0-1)",
+    )
+
+    parser.add_argument(
+        "--advantage-aggregation",
+        choices=["median", "mean"],
+        help="Choose how move advantages are aggregated when evaluating positions",
     )
 
     parser.add_argument(

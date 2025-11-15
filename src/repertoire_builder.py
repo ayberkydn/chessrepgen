@@ -891,14 +891,11 @@ class RepertoireBuilder:
         return None
 
     def _calculate_moves_weighted_advantage(self, moves: list[dict]) -> float | None:
-        """
-        Calculate weighted median advantage across a list of moves.
+        """Combine move outcomes into a single advantage value.
 
-        Args:
-            moves: List of move data dictionaries with white/draws/black counts
-
-        Returns:
-            Weighted median advantage, or None if no valid data
+        The aggregation method (weighted median or mean) is controllable through
+        configuration so users can choose a more conservative or more smoothing
+        approach when interpreting explorer data.
         """
         weighted_moves: list[tuple[float, float]] = []
         total_weight = 0.0
@@ -927,6 +924,13 @@ class RepertoireBuilder:
         if total_weight == 0 or not weighted_moves:
             return None
 
+        agg_method = str(getattr(self.config, "advantage_aggregation", "median")).lower()
+
+        if agg_method == "mean":
+            weighted_sum = sum(advantage * weight for advantage, weight in weighted_moves)
+            return weighted_sum / total_weight
+
+        # Default: weighted median for robustness against outliers
         weighted_moves.sort(key=lambda item: item[0], reverse=True)
         half_weight = total_weight / 2
         cumulative = 0.0
