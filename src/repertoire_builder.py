@@ -222,9 +222,21 @@ class RepertoireBuilder:
 
         return moves
 
-    def get_position_data(self, fen: str) -> dict:
+    def get_position_data(
+        self,
+        fen: str,
+        *,
+        depth: int | None = None,
+        line: str | None = None,
+    ) -> dict:
         # Log position data fetching
         logger.debug("Fetching position data for FEN: %s", fen[:20] + "...")
+
+        line_display = (line or "(start)").strip()
+        if len(line_display) > 80:
+            line_display = line_display[:77] + "..."
+        depth_display = depth if depth is not None else "N/A"
+        request_context = f"depth={depth_display}, line={line_display}"
 
         cached_lichess_stats = self.cache.get_lichess_stats(
             fen,
@@ -266,6 +278,7 @@ class RepertoireBuilder:
                     fen,
                     self.config.ratings,
                     self.config.time_control,
+                    request_context=f"Primary | {request_context}",
                 )
             except Exception:
                 logger.exception("Failed to fetch Lichess explorer data")
@@ -283,7 +296,9 @@ class RepertoireBuilder:
         if not master_stats:
             try:
                 logger.debug("Fetching master games data for position...")
-                master_stats = self.client.get_master_games(fen)
+                master_stats = self.client.get_master_games(
+                    fen, request_context=f"Master | {request_context}"
+                )
             except Exception:
                 logger.exception("Failed to fetch master game data")
                 master_stats = None
@@ -319,6 +334,7 @@ class RepertoireBuilder:
                         fen,
                         PLAYER_POPULARITY_RATINGS,
                         PLAYER_POPULARITY_SPEEDS,
+                        request_context=f"Highrating fallback | {request_context}",
                     )
                 except Exception:
                     logger.exception("Failed to fetch high-rating fallback data")
@@ -378,9 +394,23 @@ class RepertoireBuilder:
         self._expanded_keys.clear()
         self._heap_counter = count()
 
-    def _ensure_position_data(self, node: RepertoireNode) -> dict:
+    def _ensure_position_data(
+        self,
+        node: RepertoireNode,
+        *,
+        depth: int | None = None,
+        line: str | None = None,
+    ) -> dict:
+        if depth is None:
+            depth = node.min_player_depth
+        if line is None:
+            line = self._reconstruct_move_sequence(node)
         if node.position_stats is None:
-            node.position_stats = self.get_position_data(node.fen)
+            node.position_stats = self.get_position_data(
+                node.fen,
+                depth=depth,
+                line=line,
+            )
         return node.position_stats
 
     def _propagate_ancestors(self, node: RepertoireNode, ancestors: set[str]) -> None:
@@ -428,13 +458,17 @@ class RepertoireBuilder:
         node: RepertoireNode,
         heap: list[tuple[int, int, RepertoireNode]],
     ) -> None:
-        position_stats = self._ensure_position_data(node)
-        lichess_stats = position_stats.get("lichess")
-        player_reference = position_stats.get("player_reference")
-        depth_for_evaluator = node.min_player_depth or 0
-
         # Log the position being analyzed with move sequence from start
         position_description = self._reconstruct_move_sequence(node)
+        depth_for_evaluator = node.min_player_depth or 0
+
+        position_stats = self._ensure_position_data(
+            node,
+            depth=depth_for_evaluator,
+            line=position_description,
+        )
+        lichess_stats = position_stats.get("lichess")
+        player_reference = position_stats.get("player_reference")
         player_turn = "White" if node.is_player_turn else "Black"
         side_indicator = (
             "(player)"
@@ -442,7 +476,7 @@ class RepertoireBuilder:
             else "(opponent)"
         )
 
-        logger.info(
+        logger.debug(
             "Analyzing position: %s - Turn: %s %s - Depth: %s - FEN: %s",
             position_description,
             player_turn,
@@ -468,7 +502,7 @@ class RepertoireBuilder:
                     f"{move.san} ({advantage:+.1f}%, {move.total_games} games)"
                 )
 
-            logger.info(
+            logger.debug(
                 "Found %d candidate moves at %s: %s%s",
                 len(candidate_moves),
                 self._reconstruct_move_sequence(node),
@@ -539,9 +573,19 @@ class RepertoireBuilder:
                 if not child_node.termination_reason:
                     child_node.termination_reason = game_over_reason
                     child_node.comment = game_over_reason
-                child_stats = self._ensure_position_data(child_node)
+                child_description = self._reconstruct_move_sequence(child_node)
+                child_stats = self._ensure_position_data(
+                    child_node,
+                    depth=resulting_depth,
+                    line=child_description,
+                )
             else:
-                child_stats = self._ensure_position_data(child_node)
+                child_description = self._reconstruct_move_sequence(child_node)
+                child_stats = self._ensure_position_data(
+                    child_node,
+                    depth=resulting_depth,
+                    line=child_description,
+                )
                 termination_decision = self.evaluator.should_terminate(
                     resulting_depth,
                     child_stats.get("lichess"),
@@ -615,7 +659,12 @@ class RepertoireBuilder:
             set(),
         )
         root.min_player_depth = 0
-        root_stats = self._ensure_position_data(root)
+        root_description = self._reconstruct_move_sequence(root)
+        root_stats = self._ensure_position_data(
+            root,
+            depth=0,
+            line=root_description,
+        )
 
         termination_decision = self.evaluator.should_terminate(
             0,

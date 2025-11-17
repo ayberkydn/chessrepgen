@@ -126,12 +126,18 @@ class LichessClient:
 
         return status
 
-    def _make_request(self, endpoint: str, params: dict[str, Any]) -> dict | None:
+    def _make_request(
+        self,
+        endpoint: str,
+        params: dict[str, Any],
+        request_context: str | None = None,
+    ) -> dict | None:
         self._rate_limit()
         self._cleanup_expired_rate_limits()  # Clean up expired rate limits
 
         url = f"{self.BASE_URL}/{endpoint}"
-        logger.debug("Lichess request: GET %s params=%s", url, params)
+        context_msg = f" [{request_context}]" if request_context else ""
+        logger.info("Lichess request%s: GET %s params=%s", context_msg, url, params)
         start_time = time.perf_counter()
 
         proxies = {}
@@ -142,7 +148,7 @@ class LichessClient:
                     "http": proxy_url,
                     "https": proxy_url,
                 }
-            except ValueError as e:
+            except ValueError:
                 # All proxies are rate limited
                 logger.error("No available proxies - all are rate limited")
                 return None
@@ -151,8 +157,9 @@ class LichessClient:
             response = self.session.get(url, params=params, timeout=10, proxies=proxies)
             response.raise_for_status()
             elapsed = time.perf_counter() - start_time
-            logger.debug(
-                "Lichess response: %s %s in %.2fs",
+            logger.info(
+                "Lichess response%s: %s %s in %.2fs",
+                context_msg,
                 endpoint,
                 response.status_code,
                 elapsed,
@@ -161,7 +168,13 @@ class LichessClient:
         except requests.exceptions.RequestException as e:
             elapsed = time.perf_counter() - start_time
             logger.error(f"Error fetching data from Lichess: {e}")
-            logger.debug("Lichess request %s failed after %.2fs", endpoint, elapsed)
+            logger.info(
+                "Lichess request%s %s failed with %s after %.2fs",
+                context_msg,
+                endpoint,
+                getattr(e.response, "status_code", "no-status"),
+                elapsed,
+            )
             if hasattr(e, "response") and e.response is not None:
                 if e.response.status_code == 429:
                     retry_after = int(e.response.headers.get("Retry-After", 60))
@@ -176,18 +189,24 @@ class LichessClient:
                                 f"Rate limited on proxy {proxy_url}, trying another proxy "
                                 f"({available_proxies} proxies still available)"
                             )
-                            return self._make_request(endpoint, params)
+                            return self._make_request(
+                                endpoint, params, request_context=request_context
+                            )
                         else:
                             logger.warning(
                                 f"All proxies are rate limited. Waiting {retry_after} seconds."
                             )
                             time.sleep(retry_after)
-                            return self._make_request(endpoint, params)
+                            return self._make_request(
+                                endpoint, params, request_context=request_context
+                            )
                     else:
                         # Not using proxy - wait as before
                         logger.warning(f"Rate limited. Waiting {retry_after} seconds.")
                         time.sleep(retry_after)
-                        return self._make_request(endpoint, params)
+                        return self._make_request(
+                            endpoint, params, request_context=request_context
+                        )
             return None
         except Exception as e:
             elapsed = time.perf_counter() - start_time
@@ -200,7 +219,12 @@ class LichessClient:
             return None
 
     def get_lichess_games(
-        self, fen: str, ratings: list[int], speeds: list[str], moves: int = 12
+        self,
+        fen: str,
+        ratings: list[int],
+        speeds: list[str],
+        moves: int = 12,
+        request_context: str | None = None,
     ) -> dict | None:
         params = {
             "fen": fen,
@@ -213,19 +237,30 @@ class LichessClient:
             params["topGames"] = 0
             params["recentGames"] = 0
 
-        return self._make_request("lichess", params)
+        return self._make_request("lichess", params, request_context=request_context)
 
-    def get_master_games(self, fen: str, moves: int = 12) -> dict | None:
+    def get_master_games(
+        self, fen: str, moves: int = 12, request_context: str | None = None
+    ) -> dict | None:
         params = {
             "fen": fen,
             "moves": moves,
         }
 
-        return self._make_request("master", params)
+        return self._make_request("master", params, request_context=request_context)
 
     def get_position_stats(
-        self, fen: str, ratings: list[int], time_controls: list[str]
+        self,
+        fen: str,
+        ratings: list[int],
+        time_controls: list[str],
+        request_context: str | None = None,
     ) -> dict[str, dict | None]:
-        lichess_data = self.get_lichess_games(fen, ratings, time_controls)
+        lichess_data = self.get_lichess_games(
+            fen,
+            ratings,
+            time_controls,
+            request_context=request_context,
+        )
 
         return {"lichess": lichess_data}

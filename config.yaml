@@ -14,16 +14,16 @@ ratings:
   - 2200
   - 2500
 
-output_file: repertoire.pgn
+output_file: rep.pgn
 
 depth: 5
 
 min_opponent_popularity: 0.01
 min_highrating_popularity: 0.005
-advantage_tolerance: 0.015
+advantage_tolerance: 0.012
 
 # How to aggregate outcomes when evaluating move advantages (median or mean)
-advantage_aggregation: mean
+advantage_aggregation: median
 
 # Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison
 # This ensures we compare against statistically significant moves, not outliers
@@ -33,10 +33,10 @@ min_advantage_baseline_popularity: 0.1
 min_highrating_games: 10
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 3900
+min_lichess_games: 1000
 
 # Minimum number of Lichess games to keep a move in the final repertoire
-postprune_min_lichess_games: 5000
+postprune_min_lichess_games: 3500
 
 # Whether to fall back to high-rating data when master games are insufficient
 highrating_fallback: true
@@ -49,4 +49,3 @@ include_comments: true
 prune_non_best_moves: true
 
 use_proxy: false
-
