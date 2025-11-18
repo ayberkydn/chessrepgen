@@ -103,14 +103,14 @@ class RepertoireBuilder:
             proxies = [
                 "http://opsmwgon:c9splz41ut21@142.111.48.253:7030",
                 "http://opsmwgon:c9splz41ut21@31.59.20.176:6754",
-                "http://opsmwgon:c9splz41ut21@38.170.176.177:5572",
+                "http://opsmwgon:c9splz41ut21@23.95.150.145:6114",
                 "http://opsmwgon:c9splz41ut21@198.23.239.134:6540",
                 "http://opsmwgon:c9splz41ut21@45.38.107.97:6014",
                 "http://opsmwgon:c9splz41ut21@107.172.163.27:6543",
+                "http://opsmwgon:c9splz41ut21@198.105.121.200:6462",
                 "http://opsmwgon:c9splz41ut21@64.137.96.74:6641",
                 "http://opsmwgon:c9splz41ut21@216.10.27.159:6837",
                 "http://opsmwgon:c9splz41ut21@142.111.67.146:5611",
-                "http://opsmwgon:c9splz41ut21@142.147.128.93:6593",
             ]
         else:
             logger.info("Proxy usage disabled via configuration.")
@@ -973,10 +973,14 @@ class RepertoireBuilder:
         if total_weight == 0 or not weighted_moves:
             return None
 
-        agg_method = str(getattr(self.config, "advantage_aggregation", "median")).lower()
+        agg_method = str(
+            getattr(self.config, "advantage_aggregation", "median")
+        ).lower()
 
         if agg_method == "mean":
-            weighted_sum = sum(advantage * weight for advantage, weight in weighted_moves)
+            weighted_sum = sum(
+                advantage * weight for advantage, weight in weighted_moves
+            )
             return weighted_sum / total_weight
 
         # Default: weighted median for robustness against outliers

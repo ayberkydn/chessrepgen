@@ -1,5 +1,14 @@
 initial_moves_white:
-  - e4
+  - e4 e5
+  - e4 c5
+  - e4 e6
+  - e4 c6
+  - e4 d6
+  - e4 g6
+  - e4 d5
+  - e4 b6
+  - e4 Nf6
+  - e4 Nc6
 
 initial_moves_black:
   # - ""
@@ -33,10 +42,10 @@ min_advantage_baseline_popularity: 0.1
 min_highrating_games: 10
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 1000
+min_lichess_games: 2000
 
 # Minimum number of Lichess games to keep a move in the final repertoire
-postprune_min_lichess_games: 3500
+postprune_min_lichess_games: 10000
 
 # Whether to fall back to high-rating data when master games are insufficient
 highrating_fallback: true
@@ -48,4 +57,4 @@ cache_file: chess_cache.db
 include_comments: true
 prune_non_best_moves: true
 
-use_proxy: false
+use_proxy: true
