@@ -1001,8 +1001,147 @@ def test_postprune_removes_low_game_moves(tmp_path):
 
     assert len(root_node.edges) == 1
     assert root_node.edges[0].move_san == "e4"
-    # The remaining move should dictate the player's terminal advantage after pruning
-    assert root_node.terminal_advantage == pytest.approx(0.2)
+    # Post-pruning keeps the previously computed terminal advantage (from the pruned move)
+    assert root_node.terminal_advantage == pytest.approx(0.65)
+    # The surviving continuation still carries its own advantage value
+    assert root_node.edges[0].child.terminal_advantage == pytest.approx(0.2)
+
+
+def test_postprune_depth_limits_lines(tmp_path):
+    config = Config()
+    config.cache_file = str(tmp_path / "cache.db")
+    config.use_proxy = False
+    config.postprune_min_lichess_games = 0
+    config.postprune_depth = 1
+
+    builder = RepertoireBuilder(config, side="white")
+
+    root_board = chess.Board()
+    root_node = _make_node(root_board, is_player_turn=True)
+
+    # First player move: 1.e4
+    move_e4 = root_board.parse_san("e4")
+    board_after_e4 = root_board.copy()
+    board_after_e4.push(move_e4)
+    child_e4 = _make_node(board_after_e4, is_player_turn=False)
+    stats_e4 = MoveStats(
+        uci=move_e4.uci(),
+        san="e4",
+        white_wins=60,
+        draws=20,
+        black_wins=20,
+        total_games=100,
+    )
+    edge_e4 = RepertoireEdge(
+        parent=root_node,
+        child=child_e4,
+        move=move_e4,
+        move_san="e4",
+        stats=stats_e4,
+        resulting_depth=1,
+        comment="",
+        termination_reason=None,
+        is_terminal=False,
+    )
+
+    # Opponent reply: 1...e5
+    move_e5 = board_after_e4.parse_san("e5")
+    board_after_e5 = board_after_e4.copy()
+    board_after_e5.push(move_e5)
+    child_e5 = _make_node(board_after_e5, is_player_turn=True)
+    stats_e5 = MoveStats(
+        uci=move_e5.uci(),
+        san="e5",
+        white_wins=50,
+        draws=30,
+        black_wins=20,
+        total_games=80,
+    )
+    edge_e5 = RepertoireEdge(
+        parent=child_e4,
+        child=child_e5,
+        move=move_e5,
+        move_san="e5",
+        stats=stats_e5,
+        resulting_depth=1,
+        comment="",
+        termination_reason=None,
+        is_terminal=False,
+    )
+
+    child_e4.edges.append(edge_e5)
+    root_node.edges.append(edge_e4)
+
+    # Player replies after 1.e4 e5
+    board_after_e5_copy = board_after_e5.copy()
+    move_nf3 = board_after_e5_copy.parse_san("Nf3")
+    board_after_nf3 = board_after_e5_copy.copy()
+    board_after_nf3.push(move_nf3)
+    child_nf3 = _make_node(board_after_nf3, is_player_turn=False)
+    child_nf3.position_stats = {
+        "lichess": {"white": 40, "draws": 30, "black": 30, "moves": []}
+    }
+    stats_nf3 = MoveStats(
+        uci=move_nf3.uci(),
+        san="Nf3",
+        white_wins=40,
+        draws=30,
+        black_wins=30,
+        total_games=100,
+    )
+    edge_nf3 = RepertoireEdge(
+        parent=child_e5,
+        child=child_nf3,
+        move=move_nf3,
+        move_san="Nf3",
+        stats=stats_nf3,
+        resulting_depth=2,
+        comment="",
+        termination_reason=None,
+        is_terminal=True,
+    )
+
+    board_after_e5_copy2 = board_after_e5.copy()
+    move_bc4 = board_after_e5_copy2.parse_san("Bc4")
+    board_after_bc4 = board_after_e5_copy2.copy()
+    board_after_bc4.push(move_bc4)
+    child_bc4 = _make_node(board_after_bc4, is_player_turn=False)
+    child_bc4.position_stats = {
+        "lichess": {"white": 35, "draws": 25, "black": 40, "moves": []}
+    }
+    stats_bc4 = MoveStats(
+        uci=move_bc4.uci(),
+        san="Bc4",
+        white_wins=35,
+        draws=25,
+        black_wins=40,
+        total_games=100,
+    )
+    edge_bc4 = RepertoireEdge(
+        parent=child_e5,
+        child=child_bc4,
+        move=move_bc4,
+        move_san="Bc4",
+        stats=stats_bc4,
+        resulting_depth=2,
+        comment="",
+        termination_reason=None,
+        is_terminal=True,
+    )
+
+    child_e5.edges.extend([edge_nf3, edge_bc4])
+
+    builder.compute_terminal_advantages([root_node])
+
+    # Player replies beyond depth 1 should be pruned
+    assert child_e5.edges == []
+    assert child_e5.termination_reason is not None
+    assert "depth > 1" in child_e5.comment
+
+    # Earlier moves remain intact since they are within the depth threshold
+    assert len(root_node.edges) == 1
+    assert root_node.edges[0].move_san == "e4"
+    assert child_e4.edges and child_e4.edges[0].move_san == "e5"
 
 
 def test_opponent_moves_sorted_by_popularity(tmp_path):
@@ -1078,9 +1217,7 @@ def test_opponent_moves_sorted_by_popularity(tmp_path):
 
     first_move_node = game.variations[0]
     board_after_e4 = first_move_node.board()
-    responses = [
-        board_after_e4.san(child.move) for child in first_move_node.variations
-    ]
+    responses = [board_after_e4.san(child.move) for child in first_move_node.variations]
 
     assert responses[0] == "e5", f"Expected e5 first, got {responses}"
     assert responses[1] == "c5", f"Expected c5 second, got {responses}"

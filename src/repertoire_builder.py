@@ -1000,27 +1000,38 @@ class RepertoireBuilder:
         cache: dict[str, float | None] = {}
         for root in roots:
             self._compute_terminal_advantage(root, cache)
+        min_postprune_games_cfg = getattr(
+            self.config, "postprune_min_lichess_games", 0
+        ) or 0
         min_postprune_games = (
-            getattr(self.config, "postprune_min_lichess_games", 0) or 0
+            min_postprune_games_cfg if min_postprune_games_cfg > 0 else None
         )
-        if min_postprune_games > 0:
-            pruned = self._prune_low_sample_moves(roots, min_postprune_games)
-            if pruned:
-                cache.clear()
-                for root in roots:
-                    self._compute_terminal_advantage(root, cache)
+        max_postprune_depth = getattr(self.config, "postprune_depth", None)
+        if min_postprune_games is not None or max_postprune_depth is not None:
+            # Keep previously computed terminal advantages; post-pruning only trims moves
+            self._prune_low_sample_moves(
+                roots,
+                min_postprune_games,
+                max_postprune_depth,
+            )
         if getattr(self.config, "prune_non_best_moves", False):
             self._prune_to_best_edges(roots)
 
     def _prune_low_sample_moves(
         self,
         roots: list[RepertoireNode],
-        min_games: int,
+        min_games: int | None,
+        max_depth: int | None,
     ) -> bool:
         visited: set[str] = set()
         pruned_any = False
         for root in roots:
-            if self._prune_low_sample_moves_recursive(root, visited, min_games):
+            if self._prune_low_sample_moves_recursive(
+                root,
+                visited,
+                min_games,
+                max_depth,
+            ):
                 pruned_any = True
         return pruned_any
 
@@ -1028,7 +1039,8 @@ class RepertoireBuilder:
         self,
         node: RepertoireNode,
         visited: set[str],
-        min_games: int,
+        min_games: int | None,
+        max_depth: int | None,
     ) -> bool:
         if node.key in visited:
             return False
@@ -1043,14 +1055,20 @@ class RepertoireBuilder:
 
         for edge in node.edges:
             games = edge.stats.total_games if edge.stats else 0
-            if games < min_games:
+            prune_reasons: list[str] = []
+            if max_depth is not None and edge.resulting_depth > max_depth:
+                prune_reasons.append(
+                    f"depth {edge.resulting_depth} > {max_depth}"
+                )
+            if min_games is not None and games < min_games:
+                prune_reasons.append(f"{games} < {min_games} games")
+
+            if prune_reasons:
                 move_label = edge.move_san or (edge.move.uci() if edge.move else "N/A")
                 logger.debug(
-                    "POSTPRUNE: Removing move %s with %d Lichess games "
-                    "(threshold %d) at position %s",
+                    "POSTPRUNE: Removing move %s (%s) at position %s",
                     move_label,
-                    games,
-                    min_games,
+                    " or ".join(prune_reasons),
                     node.key,
                 )
                 pruned_here = True
@@ -1060,7 +1078,19 @@ class RepertoireBuilder:
         if len(kept_edges) != len(node.edges):
             node.edges = kept_edges
             if not kept_edges:
-                reason = f"All moves pruned below {min_games} Lichess games"
+                reason_parts: list[str] = []
+                if max_depth is not None:
+                    reason_parts.append(f"depth > {max_depth}")
+                if min_games is not None:
+                    reason_parts.append(f"Lichess games < {min_games}")
+                if reason_parts:
+                    reason = (
+                        "All moves pruned by post-prune thresholds ("
+                        + " or ".join(reason_parts)
+                        + ")"
+                    )
+                else:
+                    reason = "All moves pruned by post-prune thresholds"
                 if not node.termination_reason:
                     node.termination_reason = reason
                 if node.comment:
@@ -1072,7 +1102,12 @@ class RepertoireBuilder:
         for edge in kept_edges:
             child = edge.child
             if child:
-                if self._prune_low_sample_moves_recursive(child, visited, min_games):
+                if self._prune_low_sample_moves_recursive(
+                    child,
+                    visited,
+                    min_games,
+                    max_depth,
+                ):
                     pruned_here = True
 
         return pruned_here

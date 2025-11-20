@@ -29,6 +29,7 @@ class Config:
     postprune_min_lichess_games: int = (
         0  # Minimum Lichess games to keep a move after building the tree
     )
+    postprune_depth: int | None = None  # Maximum player depth to keep after pruning
     highrating_fallback: bool = True  # Whether to fall back to high-rating data when master games are insufficient
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
@@ -90,6 +91,9 @@ class Config:
 
         if self.postprune_min_lichess_games < 0:
             raise ValueError("postprune_min_lichess_games must be non-negative")
+
+        if self.postprune_depth is not None and self.postprune_depth < 0:
+            raise ValueError("postprune_depth must be non-negative")
 
         agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
         if agg_method not in {"mean", "median"}:
@@ -192,6 +196,12 @@ def parse_arguments() -> argparse.Namespace:
         "--postprune-min-lichess-games",
         type=int,
         help="Minimum Lichess games required to keep a move after repertoire generation",
+    )
+
+    parser.add_argument(
+        "--postprune-depth",
+        type=int,
+        help="Maximum player depth to keep when post-pruning the repertoire",
     )
 
     parser.add_argument(
