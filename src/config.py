@@ -26,10 +26,6 @@ class Config:
     # Minimum master games required before falling back to high-rating Explorer data
     min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
-    postprune_min_lichess_games: int = (
-        0  # Minimum Lichess games to keep a move after building the tree
-    )
-    postprune_depth: int | None = None  # Maximum player depth to keep after pruning
     highrating_fallback: bool = True  # Whether to fall back to high-rating data when master games are insufficient
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
@@ -40,6 +36,8 @@ class Config:
         1  # Minimum opponent continuations when popularity threshold fails
     )
     prune_non_best_moves: bool = False  # Prune non-best player moves after evaluation
+    postprune_max_depth: int | None = None  # Max player-move depth retained after build
+    postprune_min_games: int = 0  # Minimum games to keep a position during post-pruning
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Config":
@@ -51,7 +49,6 @@ class Config:
                     key_map = {
                         "min_master_popularity": "min_highrating_popularity",
                         "min_master_games": "min_highrating_games",
-                        "postprune_min_licess_games": "postprune_min_lichess_games",
                     }
                     for key, value in data.items():
                         mapped_key = key_map.get(key, key)
@@ -89,11 +86,11 @@ class Config:
         if self.min_highrating_games < 0:
             raise ValueError("min_highrating_games must be non-negative")
 
-        if self.postprune_min_lichess_games < 0:
-            raise ValueError("postprune_min_lichess_games must be non-negative")
+        if self.postprune_max_depth is not None and self.postprune_max_depth < 0:
+            raise ValueError("postprune_max_depth must be non-negative when set")
 
-        if self.postprune_depth is not None and self.postprune_depth < 0:
-            raise ValueError("postprune_depth must be non-negative")
+        if self.postprune_min_games < 0:
+            raise ValueError("postprune_min_games must be non-negative")
 
         agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
         if agg_method not in {"mean", "median"}:
@@ -192,17 +189,6 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         help="Minimum master games required (if highrating_fallback is enabled, falls back to high-rating data below this threshold)",
     )
-    parser.add_argument(
-        "--postprune-min-lichess-games",
-        type=int,
-        help="Minimum Lichess games required to keep a move after repertoire generation",
-    )
-
-    parser.add_argument(
-        "--postprune-depth",
-        type=int,
-        help="Maximum player depth to keep when post-pruning the repertoire",
-    )
 
     parser.add_argument(
         "--highrating-fallback",
@@ -278,10 +264,15 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--postprune-min-licess-games",
+        "--postprune-max-depth",
         type=int,
-        dest="postprune_min_lichess_games",
-        help=argparse.SUPPRESS,
+        help="Maximum player-move depth to keep during post-processing (None to disable)",
+    )
+
+    parser.add_argument(
+        "--postprune-min-games",
+        type=int,
+        help="Minimum total games required to keep a position during post-processing",
     )
 
     parser.set_defaults(

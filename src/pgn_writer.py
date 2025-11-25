@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from io import StringIO
+from pathlib import Path
 
 import chess
 import chess.pgn
@@ -14,29 +14,36 @@ logger = logging.getLogger(__name__)
 def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     """Extract win/draw/black statistics and format them for PGN comments.
 
-    Returns formatted comment like: W:51.2, D:15.0, B:33.8, Advantage:12.34
-    Also includes pruning information if the move was pruned.
+    Returns formatted comment like: T: 10.00
     """
     parts = []
 
-    # Pruning comments removed
+    # Get terminal advantage from child or from edge (for pruned nodes)
+    child_advantage = (
+        getattr(edge.child, "terminal_advantage", None) if edge.child else None
+    )
+    if child_advantage is None:
+        child_advantage = getattr(edge, "terminal_advantage", None)
 
-    # Add statistics if available
-    if hasattr(edge, "stats") and edge.stats and hasattr(edge.stats, "advantage"):
-        advantage = edge.stats.advantage(is_white) * 100
-        parts.append(f"Adv: {advantage:.2f}")
+    if child_advantage is not None:
+        parts.append(f"T: {child_advantage * 100:.2f}")
 
-        # Get terminal advantage from child or from edge (for pruned nodes)
-        child_advantage = (
-            getattr(edge.child, "terminal_advantage", None) if edge.child else None
-        )
-        if child_advantage is None:
-            child_advantage = getattr(edge, "terminal_advantage", None)
-
-        if child_advantage is not None:
-            parts.append(f"TAdv: {child_advantage * 100:.2f}")
+    alternative_scores = getattr(edge, "pruned_alternative_scores", None) or []
+    alt_parts = [
+        f"{san} {score * 100:.2f}"
+        for san, score in alternative_scores
+        if score is not None
+    ]
+    if alt_parts:
+        parts.append(f"Alts: {', '.join(alt_parts)}")
 
     return ", ".join(parts)
+
+
+def _slug_initial_moves(moves: str, fallback: str) -> str:
+    """Create a filesystem-friendly label from an initial move string."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", moves.strip()).strip("-").lower()
+    return slug or fallback
 
 
 class PGNWriter:
@@ -44,11 +51,6 @@ class PGNWriter:
         self.config = config
         self.is_white = side == "white"
         self.include_comments = getattr(config, "include_comments", True)
-
-    def _ensure_terminal_annotations(self, node) -> None:
-        """Skip terminal annotations - we only want formatted statistics comments."""
-        # This method is intentionally left empty to remove termination reason comments
-        pass
 
     def node_to_pgn_variation(
         self, node, game_node: chess.pgn.GameNode, is_main_line: bool = True
@@ -155,10 +157,15 @@ class PGNWriter:
         for i, move_str in enumerate(initial_moves):
             try:
                 move = board.parse_san(move_str)
-            except:
+            except (
+                chess.InvalidMoveError,
+                chess.IllegalMoveError,
+                chess.AmbiguousMoveError,
+                ValueError,
+            ):
                 try:
                     move = chess.Move.from_uci(move_str)
-                except:
+                except ValueError:
                     logger.error(f"Could not parse initial move: {move_str}")
                     continue
 
@@ -169,9 +176,7 @@ class PGNWriter:
             is_last_initial_move = i == len(initial_moves) - 1
             if is_last_initial_move and self.include_comments:
                 if root_node.terminal_advantage is not None:
-                    game_node.comment = (
-                        f"TAdv: {root_node.terminal_advantage * 100:.2f}"
-                    )
+                    game_node.comment = f"T: {root_node.terminal_advantage * 100:.2f}"
                 else:
                     logger.debug(
                         "Root node has no terminal advantage for initial moves: %s",
@@ -184,7 +189,7 @@ class PGNWriter:
 
     def write_repertoire(
         self, roots: list, output_path: str, initial_moves: list[str] | None = None
-    ):
+    ) -> list[str]:
         if initial_moves is None:
             # Fallback for backward compatibility
             initial_moves = getattr(
@@ -193,24 +198,27 @@ class PGNWriter:
                 [],
             )
 
-        all_games = []
+        base_path = Path(output_path)
+        suffix = base_path.suffix or ".pgn"
+        stem = base_path.stem if base_path.suffix else base_path.name
+        parent = base_path.parent
 
+        output_paths: list[str] = []
         for i, root in enumerate(roots):
             initial_moves_str = (
                 initial_moves[i] if initial_moves and i < len(initial_moves) else ""
             )
-            self._ensure_terminal_annotations(root)
             game = self.create_pgn_game(root, initial_moves_str)
-            all_games.append(game)
 
-        with open(output_path, "w") as f:
-            for i, game in enumerate(all_games):
-                if i > 0:
-                    f.write("\n\n")
-                f.write(str(game))
+            label = _slug_initial_moves(initial_moves_str, fallback=f"line-{i + 1}")
+            path = parent / f"{stem}-{label}{suffix}"
+            path.write_text(str(game), encoding="utf-8")
+            output_paths.append(str(path))
 
-        logger.info(f"Repertoire written to {output_path}")
-        logger.info(f"Generated {len(all_games)} repertoire(s)")
+        logger.info("Generated %d repertoire file(s)", len(output_paths))
+        if output_paths:
+            logger.info("PGN files: %s", ", ".join(output_paths))
+        return output_paths
 
     def get_statistics_summary(
         self, roots: list, initial_moves: list[str] | None = None

@@ -1,16 +1,34 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
-import logging
 from typing import Any
+
 import requests
 from dotenv import load_dotenv
-
 
 _ = load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+class LichessAPIError(Exception):
+    """Base exception for Lichess API errors."""
+
+    pass
+
+
+class RateLimitError(LichessAPIError):
+    """Raised when all proxies are rate-limited and retry is exhausted."""
+
+    pass
+
+
+class NetworkError(LichessAPIError):
+    """Raised when network request fails."""
+
+    pass
 
 
 class LichessClient:
@@ -45,24 +63,33 @@ class LichessClient:
             time.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
 
-    def _get_next_proxy(self) -> str:
-        """Get the next proxy in round-robin order, skipping rate-limited proxies."""
+    def _get_next_proxy(self) -> str | None:
+        """Get the next proxy in round-robin order, skipping rate-limited proxies.
+
+        Returns None if all proxies are rate-limited.
+        """
         if not self.proxies:
             raise ValueError("No proxies available")
 
-        # Check if current proxy is rate limited
-        current_proxy = self.proxies[self._current_proxy_index]
-        if self._is_proxy_rate_limited(current_proxy):
-            logger.warning(f"Skipping rate-limited proxy: {current_proxy}")
-            # Move to next proxy and check again
+        # Track starting index to detect when we've checked all proxies
+        start_index = self._current_proxy_index
+        checked_count = 0
+
+        while checked_count < len(self.proxies):
+            current_proxy = self.proxies[self._current_proxy_index]
             self._current_proxy_index = (self._current_proxy_index + 1) % len(
                 self.proxies
             )
-            return self._get_next_proxy()  # Recursively find next available proxy
+            checked_count += 1
 
-        proxy = current_proxy
-        self._current_proxy_index = (self._current_proxy_index + 1) % len(self.proxies)
-        return proxy
+            if not self._is_proxy_rate_limited(current_proxy):
+                return current_proxy
+
+            logger.warning(f"Skipping rate-limited proxy: {current_proxy}")
+
+        # All proxies are rate-limited
+        logger.error("All proxies are currently rate-limited")
+        return None
 
     def _is_proxy_rate_limited(self, proxy: str) -> bool:
         """Check if a proxy is currently rate limited."""
@@ -88,18 +115,34 @@ class LichessClient:
             1 for proxy in self.proxies if not self._is_proxy_rate_limited(proxy)
         )
 
+    def _get_shortest_rate_limit_wait(self) -> float | None:
+        """Get the shortest time until any proxy becomes available."""
+        if not self._proxy_rate_limits:
+            return None
+
+        current_time = time.time()
+        min_wait = None
+
+        for proxy, rate_limit_until in self._proxy_rate_limits.items():
+            wait_time = rate_limit_until - current_time
+            if wait_time > 0:
+                if min_wait is None or wait_time < min_wait:
+                    min_wait = wait_time
+
+        return min_wait
+
     def _cleanup_expired_rate_limits(self) -> None:
         """Remove expired rate limit entries."""
         current_time = time.time()
         expired_proxies = [
-            proxy
-            for proxy, rate_limit_until in self._proxy_rate_limits.items()
+            proxy_key
+            for proxy_key, rate_limit_until in self._proxy_rate_limits.items()
             if current_time >= rate_limit_until
         ]
 
-        for proxy in expired_proxies:
-            del self._proxy_rate_limits[proxy]
-            logger.info(f"Proxy {proxy} rate limit expired, now available")
+        for proxy_key in expired_proxies:
+            del self._proxy_rate_limits[proxy_key]
+            logger.info(f"Proxy {proxy_key} rate limit expired, now available")
 
     def get_proxy_status(self) -> dict[str, dict]:
         """Get current status of all proxies."""
@@ -141,17 +184,28 @@ class LichessClient:
         start_time = time.perf_counter()
 
         proxies = {}
+        proxy_url = None
         if self.proxies:
-            try:
-                proxy_url = self._get_next_proxy()
-                proxies = {
-                    "http": proxy_url,
-                    "https": proxy_url,
-                }
-            except ValueError:
-                # All proxies are rate limited
-                logger.error("No available proxies - all are rate limited")
-                return None
+            proxy_url = self._get_next_proxy()
+            if proxy_url is None:
+                # All proxies are rate limited - wait for shortest rate limit to expire
+                min_wait = self._get_shortest_rate_limit_wait()
+                if min_wait is not None and min_wait > 0:
+                    logger.warning(
+                        f"All proxies rate-limited. Waiting {min_wait:.1f}s for shortest limit to expire."
+                    )
+                    time.sleep(min_wait + 0.1)  # Add small buffer
+                    self._cleanup_expired_rate_limits()
+                    proxy_url = self._get_next_proxy()
+
+                if proxy_url is None:
+                    logger.error("No available proxies after waiting")
+                    return None
+
+            proxies = {
+                "http": proxy_url,
+                "https": proxy_url,
+            }
 
         try:
             response = self.session.get(url, params=params, timeout=10, proxies=proxies)
@@ -218,6 +272,39 @@ class LichessClient:
             )
             return None
 
+    @staticmethod
+    def _validate_position_response(data: dict | None) -> dict | None:
+        """Validate that API response has expected structure.
+
+        Returns the data if valid, None if invalid or empty.
+        """
+        if data is None:
+            return None
+
+        # Check for required keys in position response
+        if not isinstance(data, dict):
+            logger.warning("API response is not a dictionary")
+            return None
+
+        # Ensure numeric fields are present (default to 0 if missing)
+        for key in ("white", "draws", "black"):
+            if key not in data:
+                data[key] = 0
+            elif not isinstance(data[key], (int, float)):
+                logger.warning(f"API response has invalid {key} field: {data[key]}")
+                data[key] = 0
+
+        # Ensure moves is a list
+        if "moves" not in data:
+            data["moves"] = []
+        elif not isinstance(data["moves"], list):
+            logger.warning(
+                f"API response has invalid moves field: {type(data['moves'])}"
+            )
+            data["moves"] = []
+
+        return data
+
     def get_lichess_games(
         self,
         fen: str,
@@ -237,7 +324,8 @@ class LichessClient:
             params["topGames"] = 0
             params["recentGames"] = 0
 
-        return self._make_request("lichess", params, request_context=request_context)
+        result = self._make_request("lichess", params, request_context=request_context)
+        return self._validate_position_response(result)
 
     def get_master_games(
         self, fen: str, moves: int = 12, request_context: str | None = None
@@ -247,7 +335,8 @@ class LichessClient:
             "moves": moves,
         }
 
-        return self._make_request("master", params, request_context=request_context)
+        result = self._make_request("master", params, request_context=request_context)
+        return self._validate_position_response(result)
 
     def get_position_stats(
         self,

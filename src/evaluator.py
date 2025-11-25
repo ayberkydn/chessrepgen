@@ -17,10 +17,6 @@ class MoveStats:
     total_games: int
 
     @property
-    def popularity(self) -> float:
-        return self.total_games
-
-    @property
     def white_win_rate(self) -> float:
         if self.total_games == 0:
             return 0.0

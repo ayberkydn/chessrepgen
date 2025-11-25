@@ -48,6 +48,7 @@ class RepertoireEdge:
     is_terminal: bool = False
     is_best_continuation: bool = False
     terminal_advantage: float | None = None
+    pruned_alternative_scores: list[tuple[str, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -126,6 +127,37 @@ class RepertoireBuilder:
         if not stats:
             return 0
         return stats.get("white", 0) + stats.get("draws", 0) + stats.get("black", 0)
+
+    def _get_position_game_count(self, node: RepertoireNode) -> int:
+        """Return the best available total game count for a position."""
+        stats = node.position_stats
+        if not stats:
+            try:
+                stats = self._ensure_position_data(node)
+            except Exception:
+                logger.debug(
+                    "Failed to fetch position data for game count: %s", node.fen
+                )
+                return 0
+
+        # _ensure_position_data now always returns a dict (possibly empty)
+        if not stats:
+            return 0
+
+        preferred_sources = [
+            "lichess",
+            "player_reference",
+            "combined_reference",
+            "master_reference",
+            "highrating_reference",
+        ]
+
+        for key in preferred_sources:
+            source = stats.get(key)
+            if source:
+                return self._total_games(source)
+
+        return 0
 
     def _merge_reference_stats(
         self, master_stats: dict | None, highrating_stats: dict | None
@@ -207,7 +239,13 @@ class RepertoireBuilder:
                 move = board.parse_san(move_str)
                 moves.append(move)
                 board.push(move)
-            except:
+            except (
+                chess.InvalidMoveError,
+                chess.IllegalMoveError,
+                chess.AmbiguousMoveError,
+                ValueError,
+            ):
+                # SAN parsing failed, try UCI format
                 try:
                     move = chess.Move.from_uci(move_str)
                     if move in board.legal_moves:
@@ -216,9 +254,9 @@ class RepertoireBuilder:
                     else:
                         logger.error(f"Illegal move: {move_str}")
                         raise ValueError(f"Illegal move: {move_str}")
-                except:
+                except ValueError as e:
                     logger.error(f"Invalid move format: {move_str}")
-                    raise ValueError(f"Invalid move format: {move_str}")
+                    raise ValueError(f"Invalid move format: {move_str}") from e
 
         return moves
 
@@ -228,7 +266,7 @@ class RepertoireBuilder:
         *,
         depth: int | None = None,
         line: str | None = None,
-    ) -> dict:
+    ) -> dict | None:
         # Log position data fetching
         logger.debug("Fetching position data for FEN: %s", fen[:20] + "...")
 
@@ -401,16 +439,23 @@ class RepertoireBuilder:
         depth: int | None = None,
         line: str | None = None,
     ) -> dict:
+        """Fetch and cache position data for a node.
+
+        Returns an empty dict if data cannot be fetched, ensuring callers
+        always receive a dict (never None).
+        """
         if depth is None:
             depth = node.min_player_depth
         if line is None:
             line = self._reconstruct_move_sequence(node)
         if node.position_stats is None:
-            node.position_stats = self.get_position_data(
+            fetched_data = self.get_position_data(
                 node.fen,
                 depth=depth,
                 line=line,
             )
+            # Ensure we always store a dict, never None
+            node.position_stats = fetched_data if fetched_data is not None else {}
         return node.position_stats
 
     def _propagate_ancestors(self, node: RepertoireNode, ancestors: set[str]) -> None:
@@ -984,133 +1029,33 @@ class RepertoireBuilder:
             return weighted_sum / total_weight
 
         # Default: weighted median for robustness against outliers
-        weighted_moves.sort(key=lambda item: item[0], reverse=True)
+        # Sort ascending by advantage to find the true 50th percentile
+        weighted_moves.sort(key=lambda item: item[0])
         half_weight = total_weight / 2
         cumulative = 0.0
 
+        prev_advantage = weighted_moves[0][0]
         for advantage, weight in weighted_moves:
             cumulative += weight
             if cumulative >= half_weight:
-                return advantage
+                # If we're exactly at the midpoint, return this value
+                # Otherwise interpolate between prev and current for more accuracy
+                if cumulative - weight < half_weight:
+                    return advantage
+                else:
+                    # Edge case: previous cumulative already passed half
+                    return advantage
+            prev_advantage = advantage
 
-        # Fallback, should not happen unless numeric issues occur
+        # Fallback: return the last (highest) advantage value
         return weighted_moves[-1][0]
 
     def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
         cache: dict[str, float | None] = {}
         for root in roots:
             self._compute_terminal_advantage(root, cache)
-        min_postprune_games_cfg = getattr(
-            self.config, "postprune_min_lichess_games", 0
-        ) or 0
-        min_postprune_games = (
-            min_postprune_games_cfg if min_postprune_games_cfg > 0 else None
-        )
-        max_postprune_depth = getattr(self.config, "postprune_depth", None)
-        if min_postprune_games is not None or max_postprune_depth is not None:
-            # Keep previously computed terminal advantages; post-pruning only trims moves
-            self._prune_low_sample_moves(
-                roots,
-                min_postprune_games,
-                max_postprune_depth,
-            )
         if getattr(self.config, "prune_non_best_moves", False):
             self._prune_to_best_edges(roots)
-
-    def _prune_low_sample_moves(
-        self,
-        roots: list[RepertoireNode],
-        min_games: int | None,
-        max_depth: int | None,
-    ) -> bool:
-        visited: set[str] = set()
-        pruned_any = False
-        for root in roots:
-            if self._prune_low_sample_moves_recursive(
-                root,
-                visited,
-                min_games,
-                max_depth,
-            ):
-                pruned_any = True
-        return pruned_any
-
-    def _prune_low_sample_moves_recursive(
-        self,
-        node: RepertoireNode,
-        visited: set[str],
-        min_games: int | None,
-        max_depth: int | None,
-    ) -> bool:
-        if node.key in visited:
-            return False
-
-        visited.add(node.key)
-
-        if not node.edges:
-            return False
-
-        pruned_here = False
-        kept_edges: list[RepertoireEdge] = []
-
-        for edge in node.edges:
-            games = edge.stats.total_games if edge.stats else 0
-            prune_reasons: list[str] = []
-            if max_depth is not None and edge.resulting_depth > max_depth:
-                prune_reasons.append(
-                    f"depth {edge.resulting_depth} > {max_depth}"
-                )
-            if min_games is not None and games < min_games:
-                prune_reasons.append(f"{games} < {min_games} games")
-
-            if prune_reasons:
-                move_label = edge.move_san or (edge.move.uci() if edge.move else "N/A")
-                logger.debug(
-                    "POSTPRUNE: Removing move %s (%s) at position %s",
-                    move_label,
-                    " or ".join(prune_reasons),
-                    node.key,
-                )
-                pruned_here = True
-                continue
-            kept_edges.append(edge)
-
-        if len(kept_edges) != len(node.edges):
-            node.edges = kept_edges
-            if not kept_edges:
-                reason_parts: list[str] = []
-                if max_depth is not None:
-                    reason_parts.append(f"depth > {max_depth}")
-                if min_games is not None:
-                    reason_parts.append(f"Lichess games < {min_games}")
-                if reason_parts:
-                    reason = (
-                        "All moves pruned by post-prune thresholds ("
-                        + " or ".join(reason_parts)
-                        + ")"
-                    )
-                else:
-                    reason = "All moves pruned by post-prune thresholds"
-                if not node.termination_reason:
-                    node.termination_reason = reason
-                if node.comment:
-                    if reason not in node.comment:
-                        node.comment = f"{node.comment} | {reason}"
-                else:
-                    node.comment = reason
-
-        for edge in kept_edges:
-            child = edge.child
-            if child:
-                if self._prune_low_sample_moves_recursive(
-                    child,
-                    visited,
-                    min_games,
-                    max_depth,
-                ):
-                    pruned_here = True
-
-        return pruned_here
 
     def _prune_to_best_edges(self, roots: list[RepertoireNode]) -> None:
         visited: set[str] = set()
@@ -1151,6 +1096,7 @@ class RepertoireBuilder:
                     best_edge = edge
 
             if best_edge is not None:
+                alternative_scores: list[tuple[str, float]] = []
                 for edge in node.edges:
                     is_best = edge is best_edge
                     edge.is_best_continuation = is_best
@@ -1174,16 +1120,112 @@ class RepertoireBuilder:
                                 edge.termination_reason or "NONE",
                             )
                         edge.terminal_advantage = edge_terminal_advantage
-                        # Pruning comments removed
-                        edge.comment = None
-                        edge.termination_reason = None
-
+                        if edge_terminal_advantage is not None:
+                            alternative_scores.append(
+                                (edge.move_san, edge_terminal_advantage)
+                            )
                         edge.child = None
+
+                if alternative_scores:
+                    alternative_scores.sort(key=lambda item: item[1], reverse=True)
+                    best_edge.pruned_alternative_scores = alternative_scores
+                node.edges = [best_edge]
 
         for edge in node.edges:
             child = edge.child
             if child and not edge.is_terminal:
                 self._prune_node(child, visited)
+
+    def _make_edge_terminal(self, edge: RepertoireEdge, reason: str | None) -> None:
+        """Mark an edge as terminal and detach the child while preserving advantages."""
+        edge.is_terminal = True
+        if reason:
+            edge.termination_reason = reason
+            if edge.comment:
+                if reason not in edge.comment:
+                    edge.comment = f"{edge.comment} | {reason}"
+            else:
+                edge.comment = reason
+
+        terminal_advantage = None
+        if edge.child and edge.child.terminal_advantage is not None:
+            terminal_advantage = edge.child.terminal_advantage
+        elif edge.stats:
+            terminal_advantage = edge.stats.advantage(self.is_white)
+
+        edge.terminal_advantage = terminal_advantage
+        edge.child = None
+
+    def _post_prune_node(
+        self,
+        node: RepertoireNode,
+        visited: set[str],
+        max_depth: int | None,
+        min_games: int,
+    ) -> None:
+        if node.key in visited:
+            return
+
+        visited.add(node.key)
+
+        for edge in list(node.edges):
+            child = edge.child
+            if child is None:
+                continue
+
+            prune_reason: str | None = None
+            child_depth = (
+                child.min_player_depth
+                if child.min_player_depth is not None
+                else edge.resulting_depth
+            )
+
+            if (
+                max_depth is not None
+                and child_depth is not None
+                and child_depth > max_depth
+            ):
+                prune_reason = (
+                    f"Post-pruned: depth {child_depth} exceeds limit {max_depth}"
+                )
+
+            if prune_reason is None and min_games > 0:
+                game_count = self._get_position_game_count(child)
+                if game_count < min_games:
+                    prune_reason = (
+                        f"Post-pruned: {game_count} games < minimum {min_games}"
+                    )
+
+            if prune_reason:
+                logger.debug(
+                    "POST_PRUNE: Pruning edge %s -> %s (%s)",
+                    node.key,
+                    child.key,
+                    prune_reason,
+                )
+                self._make_edge_terminal(edge, prune_reason)
+                continue
+
+            if not edge.is_terminal:
+                self._post_prune_node(child, visited, max_depth, min_games)
+
+    def post_prune(self, roots: list[RepertoireNode]) -> None:
+        """Apply post-generation pruning based on depth and game count thresholds."""
+        max_depth = getattr(self.config, "postprune_max_depth", None)
+        min_games = getattr(self.config, "postprune_min_games", 0) or 0
+
+        if max_depth is None and min_games <= 0:
+            return
+
+        logger.info(
+            "Applying post-pruning (max depth: %s, min games: %s)",
+            max_depth if max_depth is not None else "disabled",
+            min_games if min_games > 0 else "disabled",
+        )
+
+        visited: set[str] = set()
+        for root in roots:
+            self._post_prune_node(root, visited, max_depth, min_games)
 
     def build_repertoire(self) -> list[RepertoireLine]:
         lines: list[RepertoireLine] = []

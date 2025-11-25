@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 
-import sys
-import os
 import logging
+import os
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 # Add the src directory to Python path to enable imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
-from repertoire_builder import RepertoireBuilder
 from pgn_writer import PGNWriter
+from repertoire_builder import RepertoireBuilder
 
 
 class ConfigLogger:
@@ -56,9 +57,17 @@ def _prepare_side_config(config, side):
 
 def _output_path_for_side(base_path: str, side: str) -> str:
     """Derive side-specific PGN path while preserving original naming."""
-    if base_path.endswith(".pgn"):
-        return base_path[:-4] + f"_{side}.pgn"
-    return f"{base_path}_{side}.pgn"
+    path = Path(base_path)
+    if not path.is_absolute():
+        path = Path("outputs") / path
+
+    if path.suffix == ".pgn":
+        path = path.with_name(f"{path.stem}_{side}{path.suffix}")
+    else:
+        path = path.with_name(f"{path.name}_{side}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def run_for_side(config, side: str, initial_moves):
@@ -99,8 +108,15 @@ def run_for_side(config, side: str, initial_moves):
     output_path = _output_path_for_side(config.output_file, side)
     if roots:
         builder.compute_terminal_advantages(roots)
-    logger.info(f"Writing {side} repertoire to {output_path}...")
-    writer.write_repertoire(roots, output_path, realized_initial_moves)
+        builder.post_prune(roots)
+    logger.info(
+        "Writing %s repertoire (one PGN per initial move) using base %s...",
+        side,
+        output_path,
+    )
+    output_paths = writer.write_repertoire(roots, output_path, realized_initial_moves)
+    if output_paths:
+        logger.info("Created %d PGN file(s) for %s", len(output_paths), side)
 
     print(f"{side_label} Repertoire Statistics:")
     print(writer.get_statistics_summary(roots, realized_initial_moves))

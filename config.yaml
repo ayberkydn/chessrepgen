@@ -1,15 +1,24 @@
 initial_moves_white:
-  - e4
-
+  - e4 c5
+  - e4 e5
+  - e4 e6
+  - e4 c6
+  - e4 d5
+  - e4 d6
+  - e4 g6
+  - e4 Nf6
+  - e4 Nc6
+  - e4 b6
+  # - d4
+  # - Nf3
 initial_moves_black:
   # - ""
+
 time_control:
   - rapid
   - blitz
 
 ratings:
-  # - 1600
-  # - 1800
   - 2000
   - 2200
   - 2500
@@ -25,8 +34,7 @@ advantage_tolerance: 0.012
 # How to aggregate outcomes when evaluating move advantages (median or mean)
 advantage_aggregation: mean
 
-# Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison
-# This ensures we compare against statistically significant moves, not outliers
+# Minimum popularity for a move to be used as baseline for advantage comparison
 min_advantage_baseline_popularity: 0.1
 
 # Minimum number of master games before using high-rating fallback data
@@ -34,12 +42,6 @@ min_highrating_games: 10
 
 # Minimum number of Lichess games to continue exploring a position
 min_lichess_games: 2000
-
-# Minimum number of Lichess games to keep a move in the final repertoire
-postprune_min_lichess_games: 10000
-
-# Limit repertoire depth after pruning (player moves beyond this depth are removed)
-postprune_depth: 7
 
 # Whether to fall back to high-rating data when master games are insufficient
 highrating_fallback: true
@@ -51,4 +53,8 @@ cache_file: chess_cache.db
 include_comments: true
 prune_non_best_moves: true
 
-use_proxy: true
+# Post-processing pruning settings
+postprune_max_depth: 7 # Max player-move depth to keep after building (null disables)
+postprune_min_games: 8000 # Minimum games to keep a position during post-processing
+
+use_proxy: false
