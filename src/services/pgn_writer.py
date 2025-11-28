@@ -14,9 +14,13 @@ logger = logging.getLogger(__name__)
 def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     """Extract win/draw/black statistics and format them for PGN comments.
 
-    Returns formatted comment like: T: 10.00
+    Returns formatted comment like: A: 5.00, T: 10.00, P: 25.00%
     """
     parts = []
+
+    if edge.stats:
+        advantage = edge.stats.advantage(is_white)
+        parts.append(f"A: {advantage * 100:.2f}")
 
     # Get terminal advantage from child or from edge (for pruned nodes)
     child_advantage = (
@@ -27,6 +31,18 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
 
     if child_advantage is not None:
         parts.append(f"T: {child_advantage * 100:.2f}")
+
+    if edge.stats and edge.parent and edge.parent.position_stats:
+        lichess_stats = edge.parent.position_stats.get("lichess")
+        if lichess_stats:
+            parent_total = (
+                lichess_stats.get("white", 0)
+                + lichess_stats.get("draws", 0)
+                + lichess_stats.get("black", 0)
+            )
+            if parent_total > 0:
+                popularity = edge.stats.total_games / parent_total
+                parts.append(f"P: {popularity * 100:.2f}%")
 
     alternative_scores = getattr(edge, "pruned_alternative_scores", None) or []
     alt_parts = [
@@ -212,7 +228,11 @@ class PGNWriter:
 
             label = _slug_initial_moves(initial_moves_str, fallback=f"line-{i + 1}")
             path = parent / f"{stem}-{label}{suffix}"
-            path.write_text(str(game), encoding="utf-8")
+            # Use FileExporter for proper line wrapping (< 80 chars per line)
+            # This ensures PGN files comply with the specification
+            with open(path, "w", encoding="utf-8") as f:
+                exporter = chess.pgn.FileExporter(f)
+                game.accept(exporter)
             output_paths.append(str(path))
 
         logger.info("Generated %d repertoire file(s)", len(output_paths))

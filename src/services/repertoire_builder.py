@@ -2,103 +2,29 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from itertools import count
 
 import chess
 
-from cache import ChessCache
-from evaluator import MoveEvaluator, MoveStats
-from lichess_client import LichessClient
+from config import PLAYER_POPULARITY_RATINGS, PLAYER_POPULARITY_SPEEDS
+from models.graph import RepertoireEdge, RepertoireLine, RepertoireNode
+
+from .cache import ChessCache
+from .evaluator import MoveEvaluator
+from .lichess_client import LichessClient
+from .pruner import RepertoirePruner
+from .stats import merge_reference_stats, total_games
 
 logger = logging.getLogger(__name__)
-PLAYER_POPULARITY_RATINGS = [2000, 2200, 2500]
-PLAYER_POPULARITY_SPEEDS = ["rapid", "classical"]
-
-
-@dataclass
-class RepertoireNode:
-    board: chess.Board
-    fen: str
-    key: str
-    is_player_turn: bool
-    comment: str = ""
-    termination_reason: str | None = None
-    position_stats: dict | None = None
-    edges: list["RepertoireEdge"] = field(default_factory=list)
-    ancestors: set[str] = field(default_factory=set)
-    min_player_depth: int | None = None
-    terminal_advantage: float | None = None
-
-    def add_edge(self, edge: "RepertoireEdge") -> None:
-        self.edges.append(edge)
-
-
-@dataclass
-class RepertoireEdge:
-    parent: RepertoireNode
-    child: RepertoireNode
-    move: chess.Move
-    move_san: str
-    stats: MoveStats | None
-    resulting_depth: int
-    comment: str = ""
-    termination_reason: str | None = None
-    is_terminal: bool = False
-    is_best_continuation: bool = False
-    terminal_advantage: float | None = None
-    pruned_alternative_scores: list[tuple[str, float]] = field(default_factory=list)
-
-
-@dataclass
-class RepertoireLine:
-    """Represents a fully constructed repertoire line rooted at a position."""
-
-    initial_moves: str
-    root: RepertoireNode
 
 
 class RepertoireBuilder:
-    def _reconstruct_move_sequence(self, node: RepertoireNode) -> str:
-        """Reconstruct the move sequence from start position to the given node."""
-        try:
-            # Use the board's move stack to get the actual sequence of moves
-            board_copy = node.board.copy()
-
-            # If the board has no moves played, it's the starting position
-            if not board_copy.move_stack:
-                return "starting position"
-
-            # Get the move history and convert to SAN notation
-            temp_board = chess.Board()
-            moves_san = []
-
-            for move in board_copy.move_stack:
-                san = temp_board.san(move)
-                moves_san.append(san)
-                temp_board.push(move)
-
-            # Format the move sequence
-            if len(moves_san) <= 6:
-                return f"{' '.join(moves_san)}"
-            else:
-                # Show first 3 moves, last 3 moves with ellipsis
-                return f"{' '.join(moves_san[:3])} ... {' '.join(moves_san[-3:])}"
-
-        except Exception as e:
-            # Fallback to a simple representation if reconstruction fails
-            try:
-                ply_count = node.board.fullmove_number * 2 - (
-                    1 if node.board.turn == chess.WHITE else 0
-                )
-                return f"ply {ply_count} ({node.board.fen()[:8]}...)"
-            except Exception:
-                return f"position {node.key[:8]}..."
-
     def __init__(self, config, side: str):
         self.config = config
         self.side = side
+        self.is_white = side == "white"
+
         proxies = None
         if getattr(config, "use_proxy", True):
             proxies = [
@@ -115,18 +41,102 @@ class RepertoireBuilder:
             ]
         else:
             logger.info("Proxy usage disabled via configuration.")
+
         self.client = LichessClient(proxies=proxies)
         self.cache = ChessCache(config.cache_file)
         self.evaluator = MoveEvaluator(config, side)
-        self.is_white = side == "white"
+        self.pruner = RepertoirePruner(config, self.is_white)
+
         self.nodes_by_key: dict[str, RepertoireNode] = {}
         self._expanded_keys: set[str] = set()
         self._heap_counter = count()
+        self._move_sequence_cache: dict[str, str] = {}  # Memoization for move sequences
 
-    def _total_games(self, stats: dict | None) -> int:
-        if not stats:
-            return 0
-        return stats.get("white", 0) + stats.get("draws", 0) + stats.get("black", 0)
+    def build_repertoire(self) -> list[RepertoireLine]:
+        lines: list[RepertoireLine] = []
+
+        initial_move_sequences = (
+            self.config.initial_moves_white
+            if self.side == "white"
+            else self.config.initial_moves_black
+        )
+
+        for initial_moves_str in initial_move_sequences:
+            logger.info(f"Building repertoire for: {initial_moves_str}")
+
+            try:
+                board = chess.Board()
+                initial_moves = self.parse_initial_moves(initial_moves_str)
+
+                for move in initial_moves:
+                    board.push(move)
+
+                root = self._build_graph_from_board(board)
+                if root:
+                    lines.append(RepertoireLine(initial_moves_str, root))
+
+            except Exception as e:
+                logger.error(f"Error building repertoire for {initial_moves_str}: {e}")
+                continue
+
+        return lines
+
+    def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
+        self.pruner.compute_terminal_advantages(roots)
+
+    def post_prune(self, roots: list[RepertoireNode]) -> None:
+        self.pruner.post_prune(roots)
+
+    def _reconstruct_move_sequence(self, node: RepertoireNode) -> str:
+        """Reconstruct the move sequence from start position to the given node.
+
+        Results are memoized by node.key to avoid redundant computation.
+        """
+        # Check memoization cache first
+        cached = self._move_sequence_cache.get(node.key)
+        if cached is not None:
+            return cached
+
+        try:
+            # Use the board's move stack to get the actual sequence of moves
+            board_copy = node.board.copy()
+
+            # If the board has no moves played, it's the starting position
+            if not board_copy.move_stack:
+                result = "starting position"
+                self._move_sequence_cache[node.key] = result
+                return result
+
+            # Get the move history and convert to SAN notation
+            temp_board = chess.Board()
+            moves_san = []
+
+            for move in board_copy.move_stack:
+                san = temp_board.san(move)
+                moves_san.append(san)
+                temp_board.push(move)
+
+            # Format the move sequence
+            if len(moves_san) <= 6:
+                result = f"{' '.join(moves_san)}"
+            else:
+                # Show first 3 moves, last 3 moves with ellipsis
+                result = f"{' '.join(moves_san[:3])} ... {' '.join(moves_san[-3:])}"
+
+            self._move_sequence_cache[node.key] = result
+            return result
+
+        except Exception:
+            # Fallback to a simple representation if reconstruction fails
+            try:
+                ply_count = node.board.fullmove_number * 2 - (
+                    1 if node.board.turn == chess.WHITE else 0
+                )
+                result = f"ply {ply_count} ({node.board.fen()[:8]}...)"
+            except Exception:
+                result = f"position {node.key[:8]}..."
+            self._move_sequence_cache[node.key] = result
+            return result
 
     def _get_position_game_count(self, node: RepertoireNode) -> int:
         """Return the best available total game count for a position."""
@@ -155,86 +165,29 @@ class RepertoireBuilder:
         for key in preferred_sources:
             source = stats.get(key)
             if source:
-                return self._total_games(source)
+                return total_games(source)
 
         return 0
-
-    def _merge_reference_stats(
-        self, master_stats: dict | None, highrating_stats: dict | None
-    ) -> dict | None:
-        sources = [stats for stats in (master_stats, highrating_stats) if stats]
-        if not sources:
-            return None
-
-        merged = {"white": 0, "draws": 0, "black": 0}
-        move_map: dict[str, dict] = {}
-
-        for stats in sources:
-            merged["white"] += stats.get("white", 0)
-            merged["draws"] += stats.get("draws", 0)
-            merged["black"] += stats.get("black", 0)
-
-            for move_data in stats.get("moves", []):
-                uci = move_data.get("uci")
-                if not uci:
-                    continue
-
-                entry = move_map.get(uci)
-                if not entry:
-                    entry = {
-                        "uci": uci,
-                        "san": move_data.get("san", ""),
-                        "white": 0,
-                        "draws": 0,
-                        "black": 0,
-                    }
-                    if move_data.get("opening"):
-                        entry["opening"] = move_data["opening"]
-                    move_map[uci] = entry
-
-                entry["white"] += move_data.get("white", 0)
-                entry["draws"] += move_data.get("draws", 0)
-                entry["black"] += move_data.get("black", 0)
-
-                games = (
-                    move_data.get("white", 0)
-                    + move_data.get("draws", 0)
-                    + move_data.get("black", 0)
-                )
-
-                avg_rating = move_data.get("averageRating")
-                if games > 0 and avg_rating:
-                    entry.setdefault("_avg_sum", 0.0)
-                    entry.setdefault("_avg_games", 0)
-                    entry["_avg_sum"] += avg_rating * games
-                    entry["_avg_games"] += games
-
-                if not entry.get("san"):
-                    entry["san"] = move_data.get("san", "")
-                if not entry.get("opening") and move_data.get("opening"):
-                    entry["opening"] = move_data["opening"]
-
-        merged_moves = []
-        for entry in move_map.values():
-            avg_games = entry.pop("_avg_games", 0)
-            avg_sum = entry.pop("_avg_sum", 0.0)
-            if avg_games > 0:
-                entry["averageRating"] = avg_sum / avg_games
-            merged_moves.append(entry)
-
-        merged_moves.sort(
-            key=lambda m: m.get("white", 0) + m.get("draws", 0) + m.get("black", 0),
-            reverse=True,
-        )
-        merged["moves"] = merged_moves
-        return merged
 
     def parse_initial_moves(self, moves_str: str) -> list[chess.Move]:
         board = chess.Board()
         moves = []
 
         move_parts = moves_str.strip().split()
-        for move_str in move_parts:
+        for raw_move_str in move_parts:
+            # Handle move numbers (e.g. "1.", "1.e4", "1...c5")
+            if raw_move_str[0].isdigit():
+                if raw_move_str.endswith("."):
+                    continue
+                move_str = (
+                    raw_move_str.split(".")[-1] if "." in raw_move_str else raw_move_str
+                )
+            else:
+                move_str = raw_move_str
+
+            if not move_str:
+                continue
+
             try:
                 move = board.parse_san(move_str)
                 moves.append(move)
@@ -344,7 +297,7 @@ class RepertoireBuilder:
                 logger.debug("Successfully fetched and cached master games data")
                 self.cache.set_master_stats(fen, master_stats)
 
-        master_total = self._total_games(master_stats)
+        master_total = total_games(master_stats)
         if master_stats:
             player_reference_stats = master_stats
             player_reference_source = "master"
@@ -388,7 +341,7 @@ class RepertoireBuilder:
                         PLAYER_POPULARITY_SPEEDS,
                     )
             # Blend master and fallback high-rating snapshots so thresholds see the full sample
-            combined_stats = self._merge_reference_stats(master_stats, highrating_stats)
+            combined_stats = merge_reference_stats(master_stats, highrating_stats)
             if combined_stats:
                 player_reference_stats = combined_stats
                 if master_stats and highrating_stats:
@@ -431,6 +384,7 @@ class RepertoireBuilder:
         self.nodes_by_key.clear()
         self._expanded_keys.clear()
         self._heap_counter = count()
+        self._move_sequence_cache.clear()
 
     def _ensure_position_data(
         self,
@@ -444,18 +398,21 @@ class RepertoireBuilder:
         Returns an empty dict if data cannot be fetched, ensuring callers
         always receive a dict (never None).
         """
+        # Early return if already fetched - avoid any unnecessary work
+        if node.position_stats is not None:
+            return node.position_stats
+
         if depth is None:
             depth = node.min_player_depth
         if line is None:
             line = self._reconstruct_move_sequence(node)
-        if node.position_stats is None:
-            fetched_data = self.get_position_data(
-                node.fen,
-                depth=depth,
-                line=line,
-            )
-            # Ensure we always store a dict, never None
-            node.position_stats = fetched_data if fetched_data is not None else {}
+        fetched_data = self.get_position_data(
+            node.fen,
+            depth=depth,
+            line=line,
+        )
+        # Ensure we always store a dict, never None
+        node.position_stats = fetched_data if fetched_data is not None else {}
         return node.position_stats
 
     def _propagate_ancestors(self, node: RepertoireNode, ancestors: set[str]) -> None:
@@ -514,12 +471,8 @@ class RepertoireBuilder:
         )
         lichess_stats = position_stats.get("lichess")
         player_reference = position_stats.get("player_reference")
-        player_turn = "White" if node.is_player_turn else "Black"
-        side_indicator = (
-            "(player)"
-            if node.is_player_turn == (self.side == "white")
-            else "(opponent)"
-        )
+        player_turn = "White" if node.board.turn == chess.WHITE else "Black"
+        side_indicator = "(player)" if node.is_player_turn else "(opponent)"
 
         logger.debug(
             "Analyzing position: %s - Turn: %s %s - Depth: %s - FEN: %s",
@@ -619,7 +572,7 @@ class RepertoireBuilder:
                     child_node.termination_reason = game_over_reason
                     child_node.comment = game_over_reason
                 child_description = self._reconstruct_move_sequence(child_node)
-                child_stats = self._ensure_position_data(
+                self._ensure_position_data(
                     child_node,
                     depth=resulting_depth,
                     line=child_description,
@@ -767,10 +720,10 @@ class RepertoireBuilder:
         )
 
         if is_player_turn:
-            total_reference_games = self._total_games(player_reference_stats)
-            master_total = self._total_games(master_stats)
-            highrating_total = self._total_games(highrating_stats)
-            combined_total = self._total_games(combined_stats)
+            total_reference_games = total_games(player_reference_stats)
+            master_total = total_games(master_stats)
+            highrating_total = total_games(highrating_stats)
+            combined_total = total_games(combined_stats)
 
             if total_reference_games < self.config.min_highrating_games:
                 if player_reference_source == "highrating":
@@ -838,420 +791,3 @@ class RepertoireBuilder:
                 node.comment = f"{node.comment} | {reason}"
         else:
             node.comment = reason
-
-    def _compute_terminal_advantage(
-        self,
-        node: RepertoireNode,
-        cache: dict[str, float | None],
-    ) -> float | None:
-        cached = cache.get(node.key)
-        if cached is not None or node.key in cache:
-            node.terminal_advantage = cached
-            return cached
-
-        if not node.edges:
-            logger.debug(
-                "TERMINAL_ADVANTAGES: Node has no edges - setting terminal_advantage to None. "
-                "Position: %s, FEN: %s, Player turn: %s, Move depth: %s",
-                node.key,
-                node.board.fen(),
-                node.is_player_turn,
-                getattr(node, "min_player_depth", "UNKNOWN"),
-            )
-            node.terminal_advantage = None
-            cache[node.key] = None
-            return None
-
-        child_values: list[tuple[float, float]] = []
-        total_weight = 0.0
-
-        for edge in node.edges:
-            advantage_value: float | None = None
-            child_node = edge.child
-            if edge.is_terminal:
-                # For terminal edges, calculate the weighted median advantage of the resulting position
-                if child_node:
-                    advantage_value = self._calculate_position_advantage(child_node)
-                    if advantage_value is not None:
-                        child_node.terminal_advantage = advantage_value
-                        cache[child_node.key] = advantage_value
-                # Fallback to move's own advantage if position calculation fails
-                if advantage_value is None and edge.stats:
-                    advantage_value = edge.stats.advantage(self.is_white)
-                    if child_node:
-                        child_node.terminal_advantage = advantage_value
-                        cache[child_node.key] = advantage_value
-            else:
-                if child_node:
-                    advantage_value = self._compute_terminal_advantage(
-                        child_node, cache
-                    )
-                if advantage_value is None and edge.stats:
-                    advantage_value = edge.stats.advantage(self.is_white)
-
-            if advantage_value is None and edge.stats:
-                advantage_value = edge.stats.advantage(self.is_white)
-                if child_node and child_node.terminal_advantage is None:
-                    child_node.terminal_advantage = advantage_value
-                    cache[child_node.key] = advantage_value
-
-            if advantage_value is None:
-                continue
-
-            weight = float(edge.stats.total_games) if edge.stats else 0.0
-            child_values.append((advantage_value, weight))
-            total_weight += weight
-
-        if not child_values:
-            logger.debug(
-                "TERMINAL_ADVANTAGES: All child nodes have None terminal advantages - setting parent to None. "
-                "Position: %s, FEN: %s, Player turn: %s, Move depth: %s, "
-                "Number of children: %d",
-                node.key,
-                node.board.fen(),
-                node.is_player_turn,
-                getattr(node, "min_player_depth", "UNKNOWN"),
-                len(node.edges),
-            )
-            node.terminal_advantage = None
-            cache[node.key] = None
-            return None
-
-        if node.is_player_turn:
-            terminal_value = max(advantage for advantage, _ in child_values)
-        else:
-            if total_weight > 0:
-                terminal_value = (
-                    sum(advantage * weight for advantage, weight in child_values)
-                    / total_weight
-                )
-            else:
-                terminal_value = sum(advantage for advantage, _ in child_values) / len(
-                    child_values
-                )
-
-        node.terminal_advantage = terminal_value
-        cache[node.key] = terminal_value
-        return terminal_value
-
-    def _calculate_position_advantage(self, node: RepertoireNode) -> float | None:
-        """
-        Calculate the advantage of a position as the weighted median of all possible moves
-        based solely on Lichess data. This represents the expected advantage when entering
-        this position.
-
-        For testing: if position_stats is explicitly set on the node, it will be used.
-        Otherwise, position data will be fetched from the API/cache.
-        """
-        position_stats = node.position_stats
-
-        # If position_stats is None and we can't fetch data (e.g., in tests), return None
-        if position_stats is None:
-            try:
-                position_stats = self._ensure_position_data(node)
-            except Exception:
-                # In test environments without API access, this will fail gracefully
-                return None
-
-        if not position_stats:
-            return None
-
-        lichess_stats = position_stats.get("lichess")
-
-        if lichess_stats and lichess_stats.get("moves"):
-            lichess_advantage = self._calculate_moves_weighted_advantage(
-                lichess_stats["moves"]
-            )
-            if lichess_advantage is not None:
-                return lichess_advantage
-
-        # Fall back to position's overall stats if no moves available
-        if lichess_stats:
-            total = (
-                lichess_stats.get("white", 0)
-                + lichess_stats.get("draws", 0)
-                + lichess_stats.get("black", 0)
-            )
-
-            if total > 0:
-                white_rate = lichess_stats.get("white", 0) / total
-                black_rate = lichess_stats.get("black", 0) / total
-
-                if self.is_white:
-                    return white_rate - black_rate
-                else:
-                    return black_rate - white_rate
-
-        return None
-
-    def _calculate_moves_weighted_advantage(self, moves: list[dict]) -> float | None:
-        """Combine move outcomes into a single advantage value.
-
-        The aggregation method (weighted median or mean) is controllable through
-        configuration so users can choose a more conservative or more smoothing
-        approach when interpreting explorer data.
-        """
-        weighted_moves: list[tuple[float, float]] = []
-        total_weight = 0.0
-
-        for move_data in moves:
-            move_total = (
-                move_data.get("white", 0)
-                + move_data.get("draws", 0)
-                + move_data.get("black", 0)
-            )
-
-            if move_total == 0:
-                continue
-
-            white_rate = move_data.get("white", 0) / move_total
-            black_rate = move_data.get("black", 0) / move_total
-
-            if self.is_white:
-                advantage = white_rate - black_rate
-            else:
-                advantage = black_rate - white_rate
-
-            weighted_moves.append((advantage, move_total))
-            total_weight += move_total
-
-        if total_weight == 0 or not weighted_moves:
-            return None
-
-        agg_method = str(
-            getattr(self.config, "advantage_aggregation", "median")
-        ).lower()
-
-        if agg_method == "mean":
-            weighted_sum = sum(
-                advantage * weight for advantage, weight in weighted_moves
-            )
-            return weighted_sum / total_weight
-
-        # Default: weighted median for robustness against outliers
-        # Sort ascending by advantage to find the true 50th percentile
-        weighted_moves.sort(key=lambda item: item[0])
-        half_weight = total_weight / 2
-        cumulative = 0.0
-
-        prev_advantage = weighted_moves[0][0]
-        for advantage, weight in weighted_moves:
-            cumulative += weight
-            if cumulative >= half_weight:
-                # If we're exactly at the midpoint, return this value
-                # Otherwise interpolate between prev and current for more accuracy
-                if cumulative - weight < half_weight:
-                    return advantage
-                else:
-                    # Edge case: previous cumulative already passed half
-                    return advantage
-            prev_advantage = advantage
-
-        # Fallback: return the last (highest) advantage value
-        return weighted_moves[-1][0]
-
-    def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
-        cache: dict[str, float | None] = {}
-        for root in roots:
-            self._compute_terminal_advantage(root, cache)
-        if getattr(self.config, "prune_non_best_moves", False):
-            self._prune_to_best_edges(roots)
-
-    def _prune_to_best_edges(self, roots: list[RepertoireNode]) -> None:
-        visited: set[str] = set()
-        for root in roots:
-            self._prune_node(root, visited)
-
-    def _prune_node(
-        self,
-        node: RepertoireNode,
-        visited: set[str],
-    ) -> None:
-        if node.key in visited:
-            return
-
-        visited.add(node.key)
-
-        if node.is_player_turn and node.edges:
-            best_edge: RepertoireEdge | None = None
-            best_advantage: float | None = None
-
-            for edge in node.edges:
-                child_advantage = edge.child.terminal_advantage if edge.child else None
-                if child_advantage is None:
-                    logger.debug(
-                        "TERMINAL_ADVANTAGES: Edge has None child advantage during pruning. "
-                        "Position: %s, Move: %s (%s), Child exists: %s, "
-                        "Child terminal advantage: %s, Edge stats available: %s",
-                        node.key,
-                        edge.move_san,
-                        edge.move.uci() if edge.move else "N/A",
-                        edge.child is not None,
-                        child_advantage,
-                        edge.stats is not None if edge.stats else False,
-                    )
-                    continue
-                if best_advantage is None or child_advantage > best_advantage:
-                    best_advantage = child_advantage
-                    best_edge = edge
-
-            if best_edge is not None:
-                alternative_scores: list[tuple[str, float]] = []
-                for edge in node.edges:
-                    is_best = edge is best_edge
-                    edge.is_best_continuation = is_best
-                    if not is_best:
-                        if not edge.is_terminal:
-                            edge.is_terminal = True
-                        # Store terminal advantage on edge before pruning
-                        edge_terminal_advantage = (
-                            edge.child.terminal_advantage if edge.child else None
-                        )
-                        if edge_terminal_advantage is None:
-                            logger.debug(
-                                "TERMINAL_ADVANTAGES: Pruned edge will have None terminal advantage. "
-                                "Position: %s, Move: %s (%s), Child FEN: %s, "
-                                "Edge was terminal: %s, Termination reason: %s",
-                                node.key,
-                                edge.move_san,
-                                edge.move.uci() if edge.move else "N/A",
-                                edge.child.board.fen() if edge.child else "N/A",
-                                edge.is_terminal,
-                                edge.termination_reason or "NONE",
-                            )
-                        edge.terminal_advantage = edge_terminal_advantage
-                        if edge_terminal_advantage is not None:
-                            alternative_scores.append(
-                                (edge.move_san, edge_terminal_advantage)
-                            )
-                        edge.child = None
-
-                if alternative_scores:
-                    alternative_scores.sort(key=lambda item: item[1], reverse=True)
-                    best_edge.pruned_alternative_scores = alternative_scores
-                node.edges = [best_edge]
-
-        for edge in node.edges:
-            child = edge.child
-            if child and not edge.is_terminal:
-                self._prune_node(child, visited)
-
-    def _make_edge_terminal(self, edge: RepertoireEdge, reason: str | None) -> None:
-        """Mark an edge as terminal and detach the child while preserving advantages."""
-        edge.is_terminal = True
-        if reason:
-            edge.termination_reason = reason
-            if edge.comment:
-                if reason not in edge.comment:
-                    edge.comment = f"{edge.comment} | {reason}"
-            else:
-                edge.comment = reason
-
-        terminal_advantage = None
-        if edge.child and edge.child.terminal_advantage is not None:
-            terminal_advantage = edge.child.terminal_advantage
-        elif edge.stats:
-            terminal_advantage = edge.stats.advantage(self.is_white)
-
-        edge.terminal_advantage = terminal_advantage
-        edge.child = None
-
-    def _post_prune_node(
-        self,
-        node: RepertoireNode,
-        visited: set[str],
-        max_depth: int | None,
-        min_games: int,
-    ) -> None:
-        if node.key in visited:
-            return
-
-        visited.add(node.key)
-
-        for edge in list(node.edges):
-            child = edge.child
-            if child is None:
-                continue
-
-            prune_reason: str | None = None
-            child_depth = (
-                child.min_player_depth
-                if child.min_player_depth is not None
-                else edge.resulting_depth
-            )
-
-            if (
-                max_depth is not None
-                and child_depth is not None
-                and child_depth > max_depth
-            ):
-                prune_reason = (
-                    f"Post-pruned: depth {child_depth} exceeds limit {max_depth}"
-                )
-
-            if prune_reason is None and min_games > 0:
-                game_count = self._get_position_game_count(child)
-                if game_count < min_games:
-                    prune_reason = (
-                        f"Post-pruned: {game_count} games < minimum {min_games}"
-                    )
-
-            if prune_reason:
-                logger.debug(
-                    "POST_PRUNE: Pruning edge %s -> %s (%s)",
-                    node.key,
-                    child.key,
-                    prune_reason,
-                )
-                self._make_edge_terminal(edge, prune_reason)
-                continue
-
-            if not edge.is_terminal:
-                self._post_prune_node(child, visited, max_depth, min_games)
-
-    def post_prune(self, roots: list[RepertoireNode]) -> None:
-        """Apply post-generation pruning based on depth and game count thresholds."""
-        max_depth = getattr(self.config, "postprune_max_depth", None)
-        min_games = getattr(self.config, "postprune_min_games", 0) or 0
-
-        if max_depth is None and min_games <= 0:
-            return
-
-        logger.info(
-            "Applying post-pruning (max depth: %s, min games: %s)",
-            max_depth if max_depth is not None else "disabled",
-            min_games if min_games > 0 else "disabled",
-        )
-
-        visited: set[str] = set()
-        for root in roots:
-            self._post_prune_node(root, visited, max_depth, min_games)
-
-    def build_repertoire(self) -> list[RepertoireLine]:
-        lines: list[RepertoireLine] = []
-
-        initial_move_sequences = (
-            self.config.initial_moves_white
-            if self.side == "white"
-            else self.config.initial_moves_black
-        )
-
-        for initial_moves_str in initial_move_sequences:
-            logger.info(f"Building repertoire for: {initial_moves_str}")
-
-            try:
-                board = chess.Board()
-                initial_moves = self.parse_initial_moves(initial_moves_str)
-
-                for move in initial_moves:
-                    board.push(move)
-
-                root = self._build_graph_from_board(board)
-                if root:
-                    lines.append(RepertoireLine(initial_moves_str, root))
-
-            except Exception as e:
-                logger.error(f"Error building repertoire for {initial_moves_str}: {e}")
-                continue
-
-        return lines

@@ -1,5 +1,5 @@
 from src.config import Config
-from src.evaluator import MoveEvaluator
+from src.services.evaluator import MoveEvaluator
 
 
 def test_player_move_selection_filters_by_reference_and_tolerance():

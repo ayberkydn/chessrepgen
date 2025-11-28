@@ -13,7 +13,7 @@ import chess
 import chess.pgn
 
 ADV_REGEX = re.compile(r"A:\s*([+-]?\d+(?:\.\d+)?)")
-TADV_REGEX = re.compile(r"TS:\s*([+-]?\d+(?:\.\d+)?)")
+TADV_REGEX = re.compile(r"(?:TS|T):\s*([+-]?\d+(?:\.\d+)?)")
 
 
 @dataclass

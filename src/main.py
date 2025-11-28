@@ -9,8 +9,8 @@ from pathlib import Path
 # Add the src directory to Python path to enable imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
-from pgn_writer import PGNWriter
-from repertoire_builder import RepertoireBuilder
+from services.pgn_writer import PGNWriter
+from services.repertoire_builder import RepertoireBuilder
 
 
 class ConfigLogger:

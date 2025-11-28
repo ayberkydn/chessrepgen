@@ -2,24 +2,22 @@ import chess
 import pytest
 
 from src.config import Config
-from src.evaluator import MoveStats
-from src.repertoire_builder import (
-    RepertoireBuilder,
-    RepertoireEdge,
-    RepertoireNode,
-)
+from src.models.graph import RepertoireEdge, RepertoireNode
+from src.models.stats import MoveStats
+from src.services.pruner import RepertoirePruner
+from src.services.repertoire_builder import RepertoireBuilder
+from src.services.stats import calculate_moves_weighted_advantage, merge_reference_stats
 
 
 def make_builder(side: str = "white") -> RepertoireBuilder:
     builder = RepertoireBuilder.__new__(RepertoireBuilder)
     builder.config = Config()
     builder.is_white = side == "white"
+    builder.pruner = RepertoirePruner(builder.config, builder.is_white)
     return builder
 
 
 def test_merge_reference_stats_combines_counts_and_ratings():
-    builder = make_builder()
-
     master_stats = {
         "white": 10,
         "draws": 5,
@@ -62,7 +60,7 @@ def test_merge_reference_stats_combines_counts_and_ratings():
         ],
     }
 
-    merged = builder._merge_reference_stats(master_stats, highrating_stats)
+    merged = merge_reference_stats(master_stats, highrating_stats)
 
     assert merged["white"] == 15
     assert merged["draws"] == 11
@@ -77,19 +75,20 @@ def test_merge_reference_stats_combines_counts_and_ratings():
 
 
 def test_calculate_moves_weighted_advantage_respects_aggregation():
-    builder = make_builder()
     moves = [
         {"uci": "m1", "white": 32, "draws": 0, "black": 8},  # advantage 0.6, weight 40
         {"uci": "m2", "white": 21, "draws": 7, "black": 7},  # advantage 0.4, weight 35
         {"uci": "m3", "white": 5, "draws": 5, "black": 15},  # advantage -0.4, weight 25
     ]
 
-    builder.config.advantage_aggregation = "median"
-    median_advantage = builder._calculate_moves_weighted_advantage(moves)
+    median_advantage = calculate_moves_weighted_advantage(
+        moves, is_white=True, aggregation_method="median"
+    )
     assert pytest.approx(0.4) == median_advantage
 
-    builder.config.advantage_aggregation = "mean"
-    mean_advantage = builder._calculate_moves_weighted_advantage(moves)
+    mean_advantage = calculate_moves_weighted_advantage(
+        moves, is_white=True, aggregation_method="mean"
+    )
     assert pytest.approx(0.28) == mean_advantage
 
 
@@ -132,7 +131,7 @@ def test_compute_terminal_advantage_prefers_player_best_and_opponent_average():
         ),
     ]
 
-    player_value = builder._compute_terminal_advantage(player_node, {})
+    player_value = builder.pruner._compute_terminal_advantage(player_node, {})
     assert pytest.approx(0.5) == player_value
     assert pytest.approx(0.5) == player_node.terminal_advantage
 
@@ -172,7 +171,7 @@ def test_compute_terminal_advantage_prefers_player_best_and_opponent_average():
         ),
     ]
 
-    opponent_value = builder._compute_terminal_advantage(opponent_node, {})
+    opponent_value = builder.pruner._compute_terminal_advantage(opponent_node, {})
     assert pytest.approx(0.2) == opponent_value
     assert pytest.approx(0.2) == opponent_node.terminal_advantage
 

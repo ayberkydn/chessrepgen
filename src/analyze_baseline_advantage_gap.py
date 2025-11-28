@@ -13,7 +13,7 @@ import chess
 import chess.pgn
 
 ADV_REGEX = re.compile(r"A:\s*([+-]?\d+(?:\.\d+)?)")
-TS_REGEX = re.compile(r"TS:\s*([+-]?\d+(?:\.\d+)?)")
+TS_REGEX = re.compile(r"(?:TS|T):\s*([+-]?\d+(?:\.\d+)?)")
 POP_REGEX = re.compile(r"P:\s*%?\s*([+-]?\d+(?:\.\d+)?)")
 
 
@@ -47,7 +47,9 @@ def determine_player_color(game: chess.pgn.Game, preference: str) -> chess.Color
     return chess.WHITE if preference == "white" else chess.BLACK
 
 
-def parse_comment(comment: str | None) -> tuple[float | None, float | None, float | None]:
+def parse_comment(
+    comment: str | None,
+) -> tuple[float | None, float | None, float | None]:
     """Extract advantage, terminal score, and popularity from a PGN comment."""
 
     if not comment:
@@ -112,15 +114,23 @@ def analyze_game(
             if baseline_candidates:
                 baseline = best_candidate(
                     baseline_candidates,
-                    lambda c: (c.advantage if c.advantage is not None else float("-inf"), -c.idx),
+                    lambda c: (
+                        c.advantage if c.advantage is not None else float("-inf"),
+                        -c.idx,
+                    ),
                 )
             else:
                 baseline = None
 
-            terminal_candidates = [c for c in candidates if c.terminal_score is not None]
+            terminal_candidates = [
+                c for c in candidates if c.terminal_score is not None
+            ]
             best_terminal = best_candidate(
                 terminal_candidates,
-                lambda c: (c.terminal_score if c.terminal_score is not None else float("-inf"), -c.idx),
+                lambda c: (
+                    c.terminal_score if c.terminal_score is not None else float("-inf"),
+                    -c.idx,
+                ),
             )
 
             if (
@@ -213,7 +223,9 @@ def main() -> int:
 
     all_records.sort(key=lambda rec: rec.diff, reverse=True)
 
-    print(f"Positions with baseline-vs-terminal advantage conflicts: {len(all_records)}")
+    print(
+        f"Positions with baseline-vs-terminal advantage conflicts: {len(all_records)}"
+    )
     print(f"Largest advantage difference: {all_records[0].diff:.2f}")
     print()
 

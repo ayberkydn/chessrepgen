@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 import json
 import logging
+import sqlite3
+import threading
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ MASTER_TIME_CONTROL_KEY = "__master__"
 class ChessCache:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._local = threading.local()
         self._init_db()
 
     def _init_db(self):
@@ -35,11 +37,16 @@ class ChessCache:
 
     @contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        try:
-            yield conn
-        finally:
-            conn.close()
+        """Get a persistent connection for the current thread."""
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        yield self._local.conn
+
+    def close(self):
+        """Close the persistent connection for the current thread."""
+        if hasattr(self._local, "conn") and self._local.conn is not None:
+            self._local.conn.close()
+            self._local.conn = None
 
     def get_lichess_stats(
         self, fen: str, ratings: list[int], time_controls: list[str]

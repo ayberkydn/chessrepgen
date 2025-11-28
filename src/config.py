@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 
 import yaml
 
+PLAYER_POPULARITY_RATINGS = [2000, 2200, 2500]
+PLAYER_POPULARITY_SPEEDS = ["rapid", "classical"]
+
 
 @dataclass
 class Config:
