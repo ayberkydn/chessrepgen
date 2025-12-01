@@ -1,9 +1,9 @@
 initial_moves_white:
-  - e4
+  # - e4
   # - d4
   # - Nf3
 initial_moves_black:
-  # - ""
+  - ""
 
 time_control:
   - rapid
@@ -40,12 +40,6 @@ highrating_fallback: true
 # Cache settings
 cache_file: chess_cache.db
 
-# Comment settings
-include_comments: false
 prune_non_best_moves: true
-
-# Post-processing pruning settings
-postprune_max_depth: 7 # Max player-move depth to keep after building (null disables)
-postprune_min_games: 2000 # Minimum games to keep a position during post-processing
 
 use_proxy: false

@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     """Extract win/draw/black statistics and format them for PGN comments.
 
-    Returns formatted comment like: A: 5.00, T: 10.00, P: 25.00%
+    Returns minified comment like: A:5.0,T:10.0,P:25.0%,G:1500,Alts:Nf3 4.5,d4 3.2
     """
     parts = []
 
     if edge.stats:
         advantage = edge.stats.advantage(is_white)
-        parts.append(f"A: {advantage * 100:.2f}")
+        parts.append(f"A:{advantage * 100:.1f}")
 
     # Get terminal advantage from child or from edge (for pruned nodes)
     child_advantage = (
@@ -30,7 +30,7 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
         child_advantage = getattr(edge, "terminal_advantage", None)
 
     if child_advantage is not None:
-        parts.append(f"T: {child_advantage * 100:.2f}")
+        parts.append(f"T:{child_advantage * 100:.1f}")
 
     if edge.stats and edge.parent and edge.parent.position_stats:
         lichess_stats = edge.parent.position_stats.get("lichess")
@@ -42,18 +42,20 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
             )
             if parent_total > 0:
                 popularity = edge.stats.total_games / parent_total
-                parts.append(f"P: {popularity * 100:.2f}%")
+                parts.append(f"P:{popularity * 100:.1f}%")
+                parts.append(f"G:{edge.stats.total_games}")
 
     alternative_scores = getattr(edge, "pruned_alternative_scores", None) or []
+    # Limit to top 3 alternatives
     alt_parts = [
-        f"{san} {score * 100:.2f}"
-        for san, score in alternative_scores
+        f"{san} {score * 100:.1f}"
+        for san, score in alternative_scores[:3]
         if score is not None
     ]
     if alt_parts:
-        parts.append(f"Alts: {', '.join(alt_parts)}")
+        parts.append(f"Alts:{','.join(alt_parts)}")
 
-    return ", ".join(parts)
+    return ",".join(parts)
 
 
 def _slug_initial_moves(moves: str, fallback: str) -> str:
@@ -66,7 +68,6 @@ class PGNWriter:
     def __init__(self, config, side: str = "white"):
         self.config = config
         self.is_white = side == "white"
-        self.include_comments = getattr(config, "include_comments", True)
 
     def node_to_pgn_variation(
         self, node, game_node: chess.pgn.GameNode, is_main_line: bool = True
@@ -135,13 +136,10 @@ class PGNWriter:
                 else:
                     new_node = game_node.add_variation(edge.move)
 
-                if self.include_comments:
-                    # Only include formatted statistics, remove all other comments
-                    stats_comment = extract_and_format_stats_comment(
-                        edge, self.is_white
-                    )
-                    if stats_comment:
-                        new_node.comment = stats_comment
+                # Always include formatted statistics as comments
+                stats_comment = extract_and_format_stats_comment(edge, self.is_white)
+                if stats_comment:
+                    new_node.comment = stats_comment
 
                 if edge.is_terminal:
                     continue
@@ -190,9 +188,9 @@ class PGNWriter:
 
             # Add terminal advantage comment to the last initial move
             is_last_initial_move = i == len(initial_moves) - 1
-            if is_last_initial_move and self.include_comments:
+            if is_last_initial_move:
                 if root_node.terminal_advantage is not None:
-                    game_node.comment = f"T: {root_node.terminal_advantage * 100:.2f}"
+                    game_node.comment = f"T:{root_node.terminal_advantage * 100:.1f}"
                 else:
                     logger.debug(
                         "Root node has no terminal advantage for initial moves: %s",

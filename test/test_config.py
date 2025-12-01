@@ -1,6 +1,6 @@
 import pytest
 
-from src.config import Config
+from src.config import Config, PostprocessConfig
 
 
 def test_validate_normalizes_advantage_aggregation():
@@ -18,9 +18,11 @@ def test_validate_rejects_unknown_time_control():
         config.validate()
 
 
-def test_validate_rejects_negative_postprune_thresholds():
-    with pytest.raises(ValueError):
-        Config(postprune_min_games=-1).validate()
+def test_postprocess_config_splits_comma_delimited_initial_moves():
+    config = PostprocessConfig(
+        initial_lines="e4 e6, d4 d5", input_file="in.pgn", output_file="out.pgn"
+    )
 
-    with pytest.raises(ValueError):
-        Config(postprune_max_depth=-2).validate()
+    config.validate()
+
+    assert config.initial_lines == ["e4 e6", "d4 d5"]

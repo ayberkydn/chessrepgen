@@ -13,24 +13,6 @@ _ = load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-class LichessAPIError(Exception):
-    """Base exception for Lichess API errors."""
-
-    pass
-
-
-class RateLimitError(LichessAPIError):
-    """Raised when all proxies are rate-limited and retry is exhausted."""
-
-    pass
-
-
-class NetworkError(LichessAPIError):
-    """Raised when network request fails."""
-
-    pass
-
-
 class LichessClient:
     BASE_URL = "https://explorer.lichess.ovh"
 
@@ -143,31 +125,6 @@ class LichessClient:
         for proxy_key in expired_proxies:
             del self._proxy_rate_limits[proxy_key]
             logger.info(f"Proxy {proxy_key} rate limit expired, now available")
-
-    def get_proxy_status(self) -> dict[str, dict]:
-        """Get current status of all proxies."""
-        if not self.proxies:
-            return {}
-
-        status = {}
-        current_time = time.time()
-
-        for proxy in self.proxies:
-            if proxy in self._proxy_rate_limits:
-                rate_limit_until = self._proxy_rate_limits[proxy]
-                if current_time < rate_limit_until:
-                    remaining = int(rate_limit_until - current_time)
-                    status[proxy] = {
-                        "status": "rate_limited",
-                        "available_in": remaining,
-                        "available_at": time.ctime(rate_limit_until),
-                    }
-                else:
-                    status[proxy] = {"status": "available"}
-            else:
-                status[proxy] = {"status": "available"}
-
-        return status
 
     def _make_request(
         self,

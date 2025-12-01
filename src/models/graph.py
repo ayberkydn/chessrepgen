@@ -36,7 +36,6 @@ class RepertoireEdge:
     comment: str = ""
     termination_reason: str | None = None
     is_terminal: bool = False
-    is_best_continuation: bool = False
     terminal_advantage: float | None = None
     pruned_alternative_scores: list[tuple[str, float]] = field(default_factory=list)
 

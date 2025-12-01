@@ -323,7 +323,6 @@ def run_profiled():
     if lines:
         roots = [line.root for line in lines]
         builder.compute_terminal_advantages(roots)
-        builder.post_prune(roots)
 
     overall_elapsed = time.perf_counter() - overall_start
 

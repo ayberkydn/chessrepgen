@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from dataclasses import dataclass, field
 
 import yaml
@@ -32,15 +33,11 @@ class Config:
     highrating_fallback: bool = True  # Whether to fall back to high-rating data when master games are insufficient
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
-    include_comments: bool = True  # Toggle for PGN comments
     use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
-    side: str | None = None  # Active side during analysis (set at runtime)
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
     )
     prune_non_best_moves: bool = False  # Prune non-best player moves after evaluation
-    postprune_max_depth: int | None = None  # Max player-move depth retained after build
-    postprune_min_games: int = 0  # Minimum games to keep a position during post-pruning
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Config":
@@ -88,12 +85,6 @@ class Config:
 
         if self.min_highrating_games < 0:
             raise ValueError("min_highrating_games must be non-negative")
-
-        if self.postprune_max_depth is not None and self.postprune_max_depth < 0:
-            raise ValueError("postprune_max_depth must be non-negative when set")
-
-        if self.postprune_min_games < 0:
-            raise ValueError("postprune_min_games must be non-negative")
 
         agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
         if agg_method not in {"mean", "median"}:
@@ -266,18 +257,6 @@ def parse_arguments() -> argparse.Namespace:
         help="Keep all player moves even if they are suboptimal",
     )
 
-    parser.add_argument(
-        "--postprune-max-depth",
-        type=int,
-        help="Maximum player-move depth to keep during post-processing (None to disable)",
-    )
-
-    parser.add_argument(
-        "--postprune-min-games",
-        type=int,
-        help="Minimum total games required to keep a position during post-processing",
-    )
-
     parser.set_defaults(
         use_proxy=None, prune_non_best_moves=None, highrating_fallback=True
     )
@@ -291,5 +270,200 @@ def load_config(args: argparse.Namespace | None = None) -> Config:
     config = Config.from_yaml(args.config)
     config.apply_cli_args(args)
 
+    config.validate()
+    return config
+
+
+@dataclass
+class PostprocessConfig:
+    """Configuration for PGN postprocessing."""
+
+    input_file: str = ""
+    output_file: str = ""
+    initial_lines: list[str] = field(default_factory=list)
+    max_depth: int | None = None
+    min_games: int = 0
+    # Granular comment removal options
+    remove_advantage: bool = False  # Remove A: field
+    remove_terminal_advantage: bool = False  # Remove T: field
+    remove_popularity: bool = False  # Remove P: field
+    remove_game_count: bool = False  # Remove G: field
+    remove_alternatives: bool = False  # Remove Alts: field
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str) -> "PostprocessConfig":
+        config = cls()
+        if os.path.exists(yaml_path):
+            with open(yaml_path, "r") as f:
+                data = yaml.safe_load(f)
+                if data:
+                    key_map = {
+                        "postprune_max_depth": "max_depth",
+                        "postprune_min_games": "min_games",
+                    }
+                    for key, value in data.items():
+                        mapped_key = key_map.get(key, key)
+                        if hasattr(config, mapped_key):
+                            setattr(config, mapped_key, value)
+        return config
+
+    def apply_cli_args(self, args: argparse.Namespace) -> None:
+        for key, value in vars(args).items():
+            if value is not None and hasattr(self, key):
+                setattr(self, key, value)
+
+    def validate(self) -> None:
+        # Normalize initial lines into a list of strings
+        if self.initial_lines is None:
+            self.initial_lines = []
+        elif isinstance(self.initial_lines, str):
+            split_values = [
+                part for part in re.split(r"[;,]", self.initial_lines) if part.strip()
+            ]
+            self.initial_lines = split_values or [self.initial_lines]
+        elif not isinstance(self.initial_lines, list):
+            raise ValueError("initial_lines must be a string or list of strings")
+
+        normalized_moves = []
+        for moves in self.initial_lines:
+            if not isinstance(moves, str):
+                raise ValueError("initial_lines must contain only strings")
+            cleaned = " ".join(moves.split())
+            if cleaned:
+                normalized_moves.append(cleaned)
+        self.initial_lines = normalized_moves
+
+        if not self.input_file:
+            raise ValueError("Input file is required")
+        if not self.output_file:
+            raise ValueError("Output file is required")
+        if self.max_depth is not None and self.max_depth < 0:
+            raise ValueError("max_depth must be non-negative when set")
+        if self.min_games < 0:
+            raise ValueError("min_games must be non-negative")
+
+
+def parse_postprocess_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Postprocess PGN repertoire files (remove comments, prune variations)"
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="postprocess.yaml",
+        help="Path to YAML configuration file",
+    )
+
+    parser.add_argument(
+        "--input",
+        type=str,
+        dest="input_file",
+        help="Input PGN file path",
+    )
+
+    parser.add_argument(
+        "--output",
+        type=str,
+        dest="output_file",
+        help="Output PGN file path",
+    )
+
+    parser.add_argument(
+        "--initial-lines",
+        type=str,
+        nargs="+",
+        dest="initial_lines",
+        default=None,
+        help="Filter to specific initial move sequences; multiple entries produce separate files",
+    )
+
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        dest="max_depth",
+        default=None,
+        help="Maximum player-move depth to keep (None to disable)",
+    )
+
+    parser.add_argument(
+        "--min-games",
+        type=int,
+        dest="min_games",
+        default=None,
+        help="Minimum total games required to keep a position",
+    )
+
+    # Backward compatibility for legacy postprocess flags
+    parser.add_argument(
+        "--postprune-max-depth",
+        type=int,
+        dest="max_depth",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
+        "--postprune-min-games",
+        type=int,
+        dest="min_games",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
+        "--remove-advantage",
+        action="store_true",
+        default=None,
+        help="Remove advantage (A:) field from comments",
+    )
+
+    parser.add_argument(
+        "--remove-terminal-advantage",
+        action="store_true",
+        default=None,
+        help="Remove terminal advantage (T:) field from comments",
+    )
+
+    parser.add_argument(
+        "--remove-popularity",
+        action="store_true",
+        default=None,
+        help="Remove popularity (P:) field from comments",
+    )
+
+    parser.add_argument(
+        "--remove-game-count",
+        action="store_true",
+        default=None,
+        help="Remove game count (G:) field from comments",
+    )
+
+    parser.add_argument(
+        "--remove-alternatives",
+        action="store_true",
+        default=None,
+        help="Remove alternatives (Alts:) field from comments",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Set logging level (default: INFO)",
+    )
+
+    return parser.parse_args()
+
+
+def load_postprocess_config(
+    args: argparse.Namespace | None = None,
+) -> PostprocessConfig:
+    if args is None:
+        args = parse_postprocess_arguments()
+
+    config = PostprocessConfig.from_yaml(args.config)
+    config.apply_cli_args(args)
     config.validate()
     return config

@@ -42,12 +42,6 @@ class ChessCache:
             self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         yield self._local.conn
 
-    def close(self):
-        """Close the persistent connection for the current thread."""
-        if hasattr(self._local, "conn") and self._local.conn is not None:
-            self._local.conn.close()
-            self._local.conn = None
-
     def get_lichess_stats(
         self, fen: str, ratings: list[int], time_controls: list[str]
     ) -> dict | None:
@@ -115,19 +109,3 @@ class ChessCache:
             )
             conn.commit()
             logger.debug(f"Cached master stats for: {fen}")
-
-    def get_cache_stats(self) -> dict[str, int]:
-        """Get statistics about cached data"""
-        with self._get_connection() as conn:
-            stats = {}
-
-            cursor = conn.execute("SELECT COUNT(*) FROM lichess_stats")
-            stats["lichess_positions"] = cursor.fetchone()[0]
-
-            return stats
-
-    def clear_all(self):
-        with self._get_connection() as conn:
-            conn.execute("DELETE FROM lichess_stats")
-            conn.commit()
-            logger.info("Cleared all cache entries")

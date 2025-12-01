@@ -88,12 +88,13 @@ def test_comment_formatting():
     # Test formatting for White side
     comment = extract_and_format_stats_comment(edge, is_white=True)
 
-    # Expected: A: 40.00, T: 50.00, P: 50.00%
-    assert "A: 40.00" in comment
-    assert "T: 50.00" in comment
-    assert "P: 50.00%" in comment
+    # Expected minified format: A:40.0,T:50.0,P:50.0%,G:50
+    assert "A:40.0" in comment
+    assert "T:50.0" in comment
+    assert "P:50.0%" in comment
+    assert "G:50" in comment
 
     # Test formatting for Black side
     # Advantage for black: 0.2 - 0.6 = -0.4
     comment_black = extract_and_format_stats_comment(edge, is_white=False)
-    assert "A: -40.00" in comment_black
+    assert "A:-40.0" in comment_black

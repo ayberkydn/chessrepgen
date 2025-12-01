@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models.graph import RepertoireEdge, RepertoireNode
 
-from .stats import calculate_moves_weighted_advantage, total_games
+from .stats import calculate_moves_weighted_advantage
 
 logger = logging.getLogger(__name__)
 
@@ -197,33 +197,32 @@ class RepertoirePruner:
             if best_edge is not None:
                 alternative_scores: list[tuple[str, float]] = []
                 for edge in node.edges:
-                    is_best = edge is best_edge
-                    edge.is_best_continuation = is_best
-                    if not is_best:
-                        if not edge.is_terminal:
-                            edge.is_terminal = True
-                        # Store terminal advantage on edge before pruning
-                        edge_terminal_advantage = (
-                            edge.child.terminal_advantage if edge.child else None
+                    if edge is best_edge:
+                        continue
+                    if not edge.is_terminal:
+                        edge.is_terminal = True
+                    # Store terminal advantage on edge before pruning
+                    edge_terminal_advantage = (
+                        edge.child.terminal_advantage if edge.child else None
+                    )
+                    if edge_terminal_advantage is None:
+                        logger.debug(
+                            "TERMINAL_ADVANTAGES: Pruned edge will have None terminal advantage. "
+                            "Position: %s, Move: %s (%s), Child FEN: %s, "
+                            "Edge was terminal: %s, Termination reason: %s",
+                            node.key,
+                            edge.move_san,
+                            edge.move.uci() if edge.move else "N/A",
+                            edge.child.board.fen() if edge.child else "N/A",
+                            edge.is_terminal,
+                            edge.termination_reason or "NONE",
                         )
-                        if edge_terminal_advantage is None:
-                            logger.debug(
-                                "TERMINAL_ADVANTAGES: Pruned edge will have None terminal advantage. "
-                                "Position: %s, Move: %s (%s), Child FEN: %s, "
-                                "Edge was terminal: %s, Termination reason: %s",
-                                node.key,
-                                edge.move_san,
-                                edge.move.uci() if edge.move else "N/A",
-                                edge.child.board.fen() if edge.child else "N/A",
-                                edge.is_terminal,
-                                edge.termination_reason or "NONE",
-                            )
-                        edge.terminal_advantage = edge_terminal_advantage
-                        if edge_terminal_advantage is not None:
-                            alternative_scores.append(
-                                (edge.move_san, edge_terminal_advantage)
-                            )
-                        edge.child = None
+                    edge.terminal_advantage = edge_terminal_advantage
+                    if edge_terminal_advantage is not None:
+                        alternative_scores.append(
+                            (edge.move_san, edge_terminal_advantage)
+                        )
+                    edge.child = None
 
                 if alternative_scores:
                     alternative_scores.sort(key=lambda item: item[1], reverse=True)
@@ -234,115 +233,3 @@ class RepertoirePruner:
             child = edge.child
             if child and not edge.is_terminal:
                 self._prune_node(child, visited)
-
-    def post_prune(self, roots: list[RepertoireNode]) -> None:
-        """Apply post-generation pruning based on depth and game count thresholds."""
-        max_depth = getattr(self.config, "postprune_max_depth", None)
-        min_games = getattr(self.config, "postprune_min_games", 0) or 0
-
-        if max_depth is None and min_games <= 0:
-            return
-
-        logger.info(
-            "Applying post-pruning (max depth: %s, min games: %s)",
-            max_depth if max_depth is not None else "disabled",
-            min_games if min_games > 0 else "disabled",
-        )
-
-        visited: set[str] = set()
-        for root in roots:
-            self._post_prune_node(root, visited, max_depth, min_games)
-
-    def _post_prune_node(
-        self,
-        node: RepertoireNode,
-        visited: set[str],
-        max_depth: int | None,
-        min_games: int,
-    ) -> None:
-        if node.key in visited:
-            return
-
-        visited.add(node.key)
-
-        for edge in list(node.edges):
-            child = edge.child
-            if child is None:
-                continue
-
-            prune_reason: str | None = None
-            child_depth = (
-                child.min_player_depth
-                if child.min_player_depth is not None
-                else edge.resulting_depth
-            )
-
-            if (
-                max_depth is not None
-                and child_depth is not None
-                and child_depth > max_depth
-            ):
-                prune_reason = (
-                    f"Post-pruned: depth {child_depth} exceeds limit {max_depth}"
-                )
-
-            if prune_reason is None and min_games > 0:
-                game_count = self._get_position_game_count(child)
-                if game_count < min_games:
-                    prune_reason = (
-                        f"Post-pruned: {game_count} games < minimum {min_games}"
-                    )
-
-            if prune_reason:
-                logger.debug(
-                    "POST_PRUNE: Pruning edge %s -> %s (%s)",
-                    node.key,
-                    child.key,
-                    prune_reason,
-                )
-                self._make_edge_terminal(edge, prune_reason)
-                continue
-
-            if not edge.is_terminal:
-                self._post_prune_node(child, visited, max_depth, min_games)
-
-    def _make_edge_terminal(self, edge: RepertoireEdge, reason: str | None) -> None:
-        """Mark an edge as terminal and detach the child while preserving advantages."""
-        edge.is_terminal = True
-        if reason:
-            edge.termination_reason = reason
-            if edge.comment:
-                if reason not in edge.comment:
-                    edge.comment = f"{edge.comment} | {reason}"
-            else:
-                edge.comment = reason
-
-        terminal_advantage = None
-        if edge.child and edge.child.terminal_advantage is not None:
-            terminal_advantage = edge.child.terminal_advantage
-        elif edge.stats:
-            terminal_advantage = edge.stats.advantage(self.is_white)
-
-        edge.terminal_advantage = terminal_advantage
-        edge.child = None
-
-    def _get_position_game_count(self, node: RepertoireNode) -> int:
-        """Return the best available total game count for a position."""
-        stats = node.position_stats
-        if not stats:
-            return 0
-
-        preferred_sources = [
-            "lichess",
-            "player_reference",
-            "combined_reference",
-            "master_reference",
-            "highrating_reference",
-        ]
-
-        for key in preferred_sources:
-            source = stats.get(key)
-            if source:
-                return total_games(source)
-
-        return 0

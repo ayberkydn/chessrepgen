@@ -84,9 +84,6 @@ class RepertoireBuilder:
     def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
         self.pruner.compute_terminal_advantages(roots)
 
-    def post_prune(self, roots: list[RepertoireNode]) -> None:
-        self.pruner.post_prune(roots)
-
     def _reconstruct_move_sequence(self, node: RepertoireNode) -> str:
         """Reconstruct the move sequence from start position to the given node.
 
@@ -137,37 +134,6 @@ class RepertoireBuilder:
                 result = f"position {node.key[:8]}..."
             self._move_sequence_cache[node.key] = result
             return result
-
-    def _get_position_game_count(self, node: RepertoireNode) -> int:
-        """Return the best available total game count for a position."""
-        stats = node.position_stats
-        if not stats:
-            try:
-                stats = self._ensure_position_data(node)
-            except Exception:
-                logger.debug(
-                    "Failed to fetch position data for game count: %s", node.fen
-                )
-                return 0
-
-        # _ensure_position_data now always returns a dict (possibly empty)
-        if not stats:
-            return 0
-
-        preferred_sources = [
-            "lichess",
-            "player_reference",
-            "combined_reference",
-            "master_reference",
-            "highrating_reference",
-        ]
-
-        for key in preferred_sources:
-            source = stats.get(key)
-            if source:
-                return total_games(source)
-
-        return 0
 
     def parse_initial_moves(self, moves_str: str) -> list[chess.Move]:
         board = chess.Board()

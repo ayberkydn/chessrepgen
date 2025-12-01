@@ -3,7 +3,6 @@
 import logging
 import os
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 # Add the src directory to Python path to enable imports
@@ -48,11 +47,6 @@ def setup_logging(level=logging.INFO):
 
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
-
-
-def _prepare_side_config(config, side):
-    """Create a config copy annotated with the current side."""
-    return replace(config, side=side)
 
 
 def _output_path_for_side(base_path: str, side: str) -> str:
@@ -102,13 +96,10 @@ def run_for_side(config, side: str, initial_moves):
                 skipped,
             )
 
-    side_config = _prepare_side_config(config, side)
-
-    writer = PGNWriter(side_config, side=side)
+    writer = PGNWriter(config, side=side)
     output_path = _output_path_for_side(config.output_file, side)
     if roots:
         builder.compute_terminal_advantages(roots)
-        builder.post_prune(roots)
     logger.info(
         "Writing %s repertoire (one PGN per initial move) using base %s...",
         side,
