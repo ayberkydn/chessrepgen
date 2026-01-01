@@ -12,6 +12,7 @@ MASTER_RATING_KEY = "__master__"
 MASTER_TIME_CONTROL_KEY = "__master__"
 
 
+
 class ChessCache:
     def __init__(self, db_path: str):
         self.db_path = db_path

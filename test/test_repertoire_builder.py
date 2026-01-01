@@ -174,3 +174,68 @@ def test_compute_terminal_advantage_prefers_player_best_and_opponent_average():
     opponent_value = builder.pruner._compute_terminal_advantage(opponent_node, {})
     assert pytest.approx(0.2) == opponent_value
     assert pytest.approx(0.2) == opponent_node.terminal_advantage
+
+
+def test_terminal_advantage_falls_back_to_parent_when_child_is_sparse():
+    builder = make_builder()
+
+    parent_board = chess.Board()
+    move = chess.Move.from_uci("e2e4")
+    child_board = parent_board.copy()
+    child_board.push(move)
+
+    parent_stats = {
+        "lichess": {
+            "white": 30,
+            "draws": 0,
+            "black": 10,
+            "moves": [
+                {"uci": "e2e4", "white": 30, "draws": 0, "black": 10},
+            ],
+        }
+    }
+    child_stats = {
+        "lichess": {
+            "white": 1,
+            "draws": 0,
+            "black": 3,  # Advantage here would be -0.5 if used
+            "moves": [
+                {"uci": "c7c5", "white": 1, "draws": 0, "black": 3},
+            ],
+        }
+    }
+
+    parent_node = RepertoireNode(
+        board=parent_board.copy(),
+        fen=parent_board.fen(),
+        key="parent",
+        is_player_turn=True,
+        position_stats=parent_stats,
+    )
+    child_node = RepertoireNode(
+        board=child_board.copy(),
+        fen=child_board.fen(),
+        key="child",
+        is_player_turn=False,
+        position_stats=child_stats,
+    )
+
+    edge = RepertoireEdge(
+        parent=parent_node,
+        child=child_node,
+        move=move,
+        move_san="e4",
+        stats=MoveStats("e2e4", "e4", 5, 0, 6, 11),  # Advantage ~ -0.09 if used
+        resulting_depth=1,
+        comment="",
+        termination_reason=None,
+        is_terminal=True,
+    )
+    parent_node.edges = [edge]
+
+    parent_value = builder.pruner._compute_terminal_advantage(parent_node, {})
+
+    # Parent advantage is +0.5; child is sparse so we should reuse parent stats
+    assert pytest.approx(0.5) == parent_value
+    assert pytest.approx(0.5) == parent_node.terminal_advantage
+    assert pytest.approx(0.5) == child_node.terminal_advantage

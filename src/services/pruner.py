@@ -53,12 +53,20 @@ class RepertoirePruner:
             advantage_value: float | None = None
             child_node = edge.child
             if edge.is_terminal:
-                # For terminal edges, calculate the weighted median advantage of the resulting position
-                if child_node:
+                use_parent_stats = (
+                    node.is_player_turn
+                    and child_node is not None
+                    and self._has_insufficient_lichess_games(child_node)
+                )
+                if use_parent_stats:
+                    # Treat terminal score as the pre-move position when the child lacks samples
+                    advantage_value = self._calculate_position_advantage(node)
+                elif child_node:
+                    # For terminal edges, calculate the weighted median advantage of the resulting position
                     advantage_value = self._calculate_position_advantage(child_node)
-                    if advantage_value is not None:
-                        child_node.terminal_advantage = advantage_value
-                        cache[child_node.key] = advantage_value
+                if advantage_value is not None and child_node:
+                    child_node.terminal_advantage = advantage_value
+                    cache[child_node.key] = advantage_value
                 # Fallback to move's own advantage if position calculation fails
                 if advantage_value is None and edge.stats:
                     advantage_value = edge.stats.advantage(self.is_white)
@@ -117,6 +125,20 @@ class RepertoirePruner:
         node.terminal_advantage = terminal_value
         cache[node.key] = terminal_value
         return terminal_value
+
+    def _has_insufficient_lichess_games(self, node: RepertoireNode) -> bool:
+        position_stats = node.position_stats or {}
+        lichess_stats = position_stats.get("lichess")
+        if not lichess_stats:
+            return True
+
+        total = (
+            lichess_stats.get("white", 0)
+            + lichess_stats.get("draws", 0)
+            + lichess_stats.get("black", 0)
+        )
+        min_lichess = getattr(self.config, "min_lichess_games", 1000)
+        return total < min_lichess
 
     def _calculate_position_advantage(self, node: RepertoireNode) -> float | None:
         """

@@ -16,7 +16,6 @@ class Config:
     initial_moves_white: list[str] = field(default_factory=lambda: ["e4"])
     initial_moves_black: list[str] = field(default_factory=lambda: ["e4 d5"])
     time_control: list[str] = field(default_factory=lambda: ["rapid", "blitz"])
-    depth: int = 10  # Maximum player moves to explore after initial moves
     ratings: list[int] = field(default_factory=lambda: [1600, 1800, 2000, 2200, 2500])
     min_opponent_popularity: float = 0.1
     # Popularity threshold for player moves using master (or fallback) reference data
@@ -64,11 +63,6 @@ class Config:
                 setattr(self, key, value)
 
     def validate(self) -> None:
-        if self.depth < 1 or self.depth > 50:
-            raise ValueError(
-                "Depth must be between 1 and 50 (represents player moves after initial position)"
-            )
-
         if not 0 <= self.min_opponent_popularity <= 1:
             raise ValueError("min_opponent_popularity must be between 0 and 1")
 
@@ -136,11 +130,6 @@ def parse_arguments() -> argparse.Namespace:
         "--time-control", type=str, nargs="+", help="Time controls to consider"
     )
 
-    parser.add_argument(
-        "--depth",
-        type=int,
-        help="Maximum player moves to explore after initial moves (depth in terms of player moves)",
-    )
     parser.add_argument(
         "--ratings",
         type=int,

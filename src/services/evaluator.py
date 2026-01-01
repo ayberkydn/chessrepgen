@@ -236,13 +236,6 @@ class MoveEvaluator:
         depth: int,
         lichess_stats: dict | None,
     ) -> TerminationDecision:
-        if depth > self.config.depth:
-            return TerminationDecision(
-                True,
-                f"Maximum depth {self.config.depth} player moves reached",
-                False,
-            )
-
         # Check if position is already very favorable based on Lichess winrate
         if lichess_stats:
             total_lichess = (

@@ -185,7 +185,7 @@ class RepertoireBuilder:
         *,
         depth: int | None = None,
         line: str | None = None,
-    ) -> dict | None:
+    ) -> tuple[dict | None, bool]:
         # Log position data fetching
         logger.debug("Fetching position data for FEN: %s", fen[:20] + "...")
 
@@ -213,6 +213,7 @@ class RepertoireBuilder:
         player_reference_stats = None
         player_reference_source: str | None = None
         combined_stats: dict | None = None
+        lichess_stats_fetched_from_api = False
 
         # Log cache status
         cache_status = []
@@ -229,6 +230,7 @@ class RepertoireBuilder:
             logger.debug("Cache miss - fetching from API")
 
         if not cached_lichess_stats:
+            lichess_stats_fetched_from_api = True
             try:
                 logger.debug("Fetching Lichess explorer data for position...")
                 api_data = self.client.get_position_stats(
@@ -276,7 +278,7 @@ class RepertoireBuilder:
                     master_total,
                     self.config.min_highrating_games,
                 )
-                return None
+                return None, lichess_stats_fetched_from_api
             if master_total > 0:
                 logger.debug(
                     "Master games below threshold for %s (%s < %s); attempting fallback",
@@ -332,19 +334,25 @@ class RepertoireBuilder:
         if player_reference_stats:
             data_sources.append(f"Reference ({player_reference_source})")
 
-        logger.debug(
-            "Position data ready - Sources: %s",
-            ", ".join(data_sources) if data_sources else "None",
-        )
+        if lichess_stats_fetched_from_api:
+            lichess_total = total_games(lichess_stats)
+            logger.info(
+                "Position data ready - Sources: %s - Lichess games: %d",
+                ", ".join(data_sources) if data_sources else "None",
+                lichess_total,
+            )
 
-        return {
-            "lichess": lichess_stats,
-            "player_reference": player_reference_stats,
-            "player_reference_source": player_reference_source,
-            "master_reference": master_stats,
-            "highrating_reference": highrating_stats,
-            "combined_reference": combined_stats,
-        }
+        return (
+            {
+                "lichess": lichess_stats,
+                "player_reference": player_reference_stats,
+                "player_reference_source": player_reference_source,
+                "master_reference": master_stats,
+                "highrating_reference": highrating_stats,
+                "combined_reference": combined_stats,
+            },
+            lichess_stats_fetched_from_api,
+        )
 
     def _reset_graph_state(self) -> None:
         self.nodes_by_key.clear()
@@ -358,28 +366,30 @@ class RepertoireBuilder:
         *,
         depth: int | None = None,
         line: str | None = None,
-    ) -> dict:
+    ) -> tuple[dict, bool]:
         """Fetch and cache position data for a node.
 
         Returns an empty dict if data cannot be fetched, ensuring callers
         always receive a dict (never None).
+
+        Returns a tuple of (data_dict, lichess_fetched_from_api).
         """
         # Early return if already fetched - avoid any unnecessary work
         if node.position_stats is not None:
-            return node.position_stats
+            return node.position_stats, False
 
         if depth is None:
             depth = node.min_player_depth
         if line is None:
             line = self._reconstruct_move_sequence(node)
-        fetched_data = self.get_position_data(
+        fetched_data, lichess_fetched_from_api = self.get_position_data(
             node.fen,
             depth=depth,
             line=line,
         )
         # Ensure we always store a dict, never None
         node.position_stats = fetched_data if fetched_data is not None else {}
-        return node.position_stats
+        return node.position_stats, lichess_fetched_from_api
 
     def _propagate_ancestors(self, node: RepertoireNode, ancestors: set[str]) -> None:
         missing = ancestors - node.ancestors
@@ -430,7 +440,7 @@ class RepertoireBuilder:
         position_description = self._reconstruct_move_sequence(node)
         depth_for_evaluator = node.min_player_depth or 0
 
-        position_stats = self._ensure_position_data(
+        position_stats, lichess_fetched_from_api = self._ensure_position_data(
             node,
             depth=depth_for_evaluator,
             line=position_description,
@@ -440,14 +450,16 @@ class RepertoireBuilder:
         player_turn = "White" if node.board.turn == chess.WHITE else "Black"
         side_indicator = "(player)" if node.is_player_turn else "(opponent)"
 
-        logger.debug(
-            "Analyzing position: %s - Turn: %s %s - Depth: %s - FEN: %s",
-            position_description,
-            player_turn,
-            side_indicator,
-            depth_for_evaluator,
-            node.board.fen()[:20] + "...",
-        )
+        if lichess_fetched_from_api:
+            lichess_total = total_games(lichess_stats)
+            logger.info(
+                "Analyzing position: %s - Turn: %s %s - Depth: %s - Lichess games: %d",
+                position_description,
+                player_turn,
+                side_indicator,
+                depth_for_evaluator,
+                lichess_total,
+            )
 
         candidate_moves = self.evaluator.evaluate_position(
             lichess_stats,
@@ -545,7 +557,7 @@ class RepertoireBuilder:
                 )
             else:
                 child_description = self._reconstruct_move_sequence(child_node)
-                child_stats = self._ensure_position_data(
+                child_stats, _ = self._ensure_position_data(
                     child_node,
                     depth=resulting_depth,
                     line=child_description,
@@ -624,7 +636,7 @@ class RepertoireBuilder:
         )
         root.min_player_depth = 0
         root_description = self._reconstruct_move_sequence(root)
-        root_stats = self._ensure_position_data(
+        root_stats, _ = self._ensure_position_data(
             root,
             depth=0,
             line=root_description,

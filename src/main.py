@@ -33,7 +33,6 @@ class ConfigLogger:
         print("=" * 60 + "\n")
 
     def log_configuration(self, config) -> None:
-        self.logger.info(f"Depth: {config.depth} (player moves after initial moves)")
         self.logger.info(f"Rating brackets: {', '.join(map(str, config.ratings))}")
         self.logger.info(f"Time controls: {config.time_control}")
 

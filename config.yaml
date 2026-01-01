@@ -1,9 +1,10 @@
 initial_moves_white:
-  # - e4
+  - e4
+  # - Nf3
   # - d4
   # - Nf3
 initial_moves_black:
-  - ""
+  # - ""
 
 time_control:
   - rapid
@@ -15,8 +16,6 @@ ratings:
   - 2500
 
 output_file: rep.pgn
-
-depth: 5
 
 min_opponent_popularity: 0.01
 min_highrating_popularity: 0.005
@@ -32,7 +31,7 @@ min_advantage_baseline_popularity: 0.1
 min_highrating_games: 10
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 2000
+min_lichess_games: 10000
 
 # Whether to fall back to high-rating data when master games are insufficient
 highrating_fallback: true

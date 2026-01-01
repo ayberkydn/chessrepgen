@@ -162,7 +162,6 @@ class PGNWriter:
         game.headers["InitialMoves"] = initial_moves_str
         game.headers["TimeControl"] = ", ".join(self.config.time_control)
         game.headers["RatingBrackets"] = ", ".join(map(str, self.config.ratings))
-        game.headers["Depth"] = str(self.config.depth)
 
         board = chess.Board()
         game_node = game
@@ -294,7 +293,6 @@ Total variations: {total_variations}
 Maximum depth reached: {max_depth_reached}
 Configuration:
   Side: {"white" if self.is_white else "black"}
-  Target depth: {self.config.depth}
   Rating brackets: {", ".join(map(str, self.config.ratings))}
   Time controls: {", ".join(self.config.time_control)}
   Min opponent popularity: {self.config.min_opponent_popularity:.1%}

@@ -1,24 +1,22 @@
 # Postprocessing configuration for PGN repertoire files
 
-# input_file: "outputs/rep_black-line-1.pgn"
-# output_file: "outputs/processed.pgn"
-# initial_lines:
-#   - e4 e6
-#   - e4 e5
-#   - e4 d5
-
-input_file: "outputs/rep_black-line-1.pgn"
-output_file: "outputs/processed.pgn"
+input_file: "outputs/rep_white-e4.pgn"
+output_file: "outputs/processed_white.pgn"
 initial_lines:
-  - e4 d5
-  - d4 c5
-  # - c4
-  # - b3
+  - e4
 
-max_depth: 7
+# input_file: "outputs/rep_black-line-1.pgn"
+# output_file: "outputs/processed_black.pgn"
+# initial_lines:
+#   - e4 e5
+#   - d4 c5
+#   # - c4
+#   # - b3
+
+max_depth: 15
 
 # Minimum total games required to keep a position (0 to disable)
-min_games: 2000
+min_games: 20000
 
 # Granular comment removal options
 # Remove advantage (A:) field from comments
@@ -30,4 +28,4 @@ remove_popularity: true
 # Remove game count (G:) field from comments
 remove_game_count: true
 # Remove alternatives (Alts:) field from comments
-remove_alternatives: true
+remove_alternatives: false
