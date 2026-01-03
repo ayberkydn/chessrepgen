@@ -1,8 +1,6 @@
 initial_moves_white:
   - e4
   # - Nf3
-  # - d4
-  # - Nf3
 initial_moves_black:
   # - ""
 
@@ -27,18 +25,24 @@ advantage_aggregation: mean
 # Minimum popularity for a move to be used as baseline for advantage comparison
 min_advantage_baseline_popularity: 0.1
 
-# Minimum number of master games before using high-rating fallback data
-min_highrating_games: 10
-
 # Minimum number of Lichess games to continue exploring a position
 min_lichess_games: 10000
 
-# Whether to fall back to high-rating data when master games are insufficient
-highrating_fallback: true
-
 # Cache settings
 cache_file: chess_cache.db
+master_cache_file: master_cache.db
+stockfish_cache_file: stockfish_cache.db
 
 prune_non_best_moves: true
 
 use_proxy: false
+
+# Stockfish evaluation settings
+use_stockfish: true
+stockfish_path: stockfish
+stockfish_depth: 20
+stockfish_threads: 8
+
+# Terminal score calculation weights (must sum to 1.0)
+terminal_advantage_weight: 0.5
+stockfish_score_weight: 0.5

@@ -20,6 +20,7 @@ class RepertoireNode:
     ancestors: set[str] = field(default_factory=set)
     min_player_depth: int | None = None
     terminal_advantage: float | None = None
+    stockfish_score: float | None = None
 
     def add_edge(self, edge: "RepertoireEdge") -> None:
         self.edges.append(edge)

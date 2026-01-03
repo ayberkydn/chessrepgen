@@ -7,14 +7,13 @@ from itertools import count
 
 import chess
 
-from config import PLAYER_POPULARITY_RATINGS, PLAYER_POPULARITY_SPEEDS
 from models.graph import RepertoireEdge, RepertoireLine, RepertoireNode
 
-from .cache import ChessCache
+from .cache import ChessCache, MasterCache
 from .evaluator import MoveEvaluator
 from .lichess_client import LichessClient
 from .pruner import RepertoirePruner
-from .stats import merge_reference_stats, total_games
+from .stats import total_games
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,7 @@ class RepertoireBuilder:
 
         self.client = LichessClient(proxies=proxies)
         self.cache = ChessCache(config.cache_file)
+        self.master_cache = MasterCache(config.master_cache_file)
         self.evaluator = MoveEvaluator(config, side)
         self.pruner = RepertoirePruner(config, self.is_white)
 
@@ -83,6 +83,10 @@ class RepertoireBuilder:
 
     def compute_terminal_advantages(self, roots: list[RepertoireNode]) -> None:
         self.pruner.compute_terminal_advantages(roots)
+
+    def evaluate_and_combine_terminal_scores(self, roots: list[RepertoireNode]) -> None:
+        """Evaluate terminal nodes with Stockfish and combine with terminal_advantage."""
+        self.pruner.evaluate_and_combine_terminal_scores(roots)
 
     def _reconstruct_move_sequence(self, node: RepertoireNode) -> str:
         """Reconstruct the move sequence from start position to the given node.
@@ -200,19 +204,11 @@ class RepertoireBuilder:
             self.config.ratings,
             self.config.time_control,
         )
-        cached_master_stats = self.cache.get_master_stats(fen)
-        cached_highrating_stats = self.cache.get_lichess_stats(
-            fen,
-            PLAYER_POPULARITY_RATINGS,
-            PLAYER_POPULARITY_SPEEDS,
-        )
-
+        cached_master_stats = self.master_cache.get_master_stats(fen)
         lichess_stats = cached_lichess_stats
         master_stats = cached_master_stats
-        highrating_stats = cached_highrating_stats
         player_reference_stats = None
         player_reference_source: str | None = None
-        combined_stats: dict | None = None
         lichess_stats_fetched_from_api = False
 
         # Log cache status
@@ -221,9 +217,6 @@ class RepertoireBuilder:
             cache_status.append("Lichess")
         if cached_master_stats:
             cache_status.append("Master")
-        if cached_highrating_stats:
-            cache_status.append("High-rating")
-
         if cache_status:
             logger.debug("Cache hit for %s data", ", ".join(cache_status))
         else:
@@ -263,69 +256,11 @@ class RepertoireBuilder:
                 master_stats = None
             if master_stats:
                 logger.debug("Successfully fetched and cached master games data")
-                self.cache.set_master_stats(fen, master_stats)
+                self.master_cache.set_master_stats(fen, master_stats)
 
-        master_total = total_games(master_stats)
         if master_stats:
             player_reference_stats = master_stats
             player_reference_source = "master"
-
-        if master_total < self.config.min_highrating_games:
-            if not self.config.highrating_fallback:
-                logger.debug(
-                    "Master games below threshold for %s (%s < %s) and high-rating fallback disabled - terminating position",
-                    fen,
-                    master_total,
-                    self.config.min_highrating_games,
-                )
-                return None, lichess_stats_fetched_from_api
-            if master_total > 0:
-                logger.debug(
-                    "Master games below threshold for %s (%s < %s); attempting fallback",
-                    fen,
-                    master_total,
-                    self.config.min_highrating_games,
-                )
-            if not highrating_stats:
-                try:
-                    logger.debug("Fetching high-rating fallback data for position...")
-                    highrating_stats = self.client.get_lichess_games(
-                        fen,
-                        PLAYER_POPULARITY_RATINGS,
-                        PLAYER_POPULARITY_SPEEDS,
-                        request_context=f"Highrating fallback | {request_context}",
-                    )
-                except Exception:
-                    logger.exception("Failed to fetch high-rating fallback data")
-                    highrating_stats = None
-                if highrating_stats:
-                    logger.debug(
-                        "Successfully fetched and cached high-rating fallback data"
-                    )
-                    self.cache.set_lichess_stats(
-                        fen,
-                        highrating_stats,
-                        PLAYER_POPULARITY_RATINGS,
-                        PLAYER_POPULARITY_SPEEDS,
-                    )
-            # Blend master and fallback high-rating snapshots so thresholds see the full sample
-            combined_stats = merge_reference_stats(master_stats, highrating_stats)
-            if combined_stats:
-                player_reference_stats = combined_stats
-                if master_stats and highrating_stats:
-                    player_reference_source = "combined"
-                elif highrating_stats:
-                    player_reference_source = "highrating"
-                else:
-                    player_reference_source = "master"
-
-        if not player_reference_stats:
-            if master_stats:
-                player_reference_stats = master_stats
-                player_reference_source = "master"
-            elif highrating_stats:
-                player_reference_stats = highrating_stats
-                player_reference_source = "highrating"
 
         # Log final data source summary
         data_sources = []
@@ -348,8 +283,6 @@ class RepertoireBuilder:
                 "player_reference": player_reference_stats,
                 "player_reference_source": player_reference_source,
                 "master_reference": master_stats,
-                "highrating_reference": highrating_stats,
-                "combined_reference": combined_stats,
             },
             lichess_stats_fetched_from_api,
         )
@@ -682,8 +615,6 @@ class RepertoireBuilder:
         player_reference_stats = position_stats.get("player_reference")
         player_reference_source = position_stats.get("player_reference_source")
         master_stats = position_stats.get("master_reference")
-        highrating_stats = position_stats.get("highrating_reference")
-        combined_stats = position_stats.get("combined_reference")
 
         # Log detailed information about why no candidate moves were found
         logger.debug(
@@ -699,63 +630,16 @@ class RepertoireBuilder:
 
         if is_player_turn:
             total_reference_games = total_games(player_reference_stats)
-            master_total = total_games(master_stats)
-            highrating_total = total_games(highrating_stats)
-            combined_total = total_games(combined_stats)
-
-            if total_reference_games < self.config.min_highrating_games:
-                if player_reference_source == "highrating":
-                    reason = (
-                        f"High-rating games below threshold ({total_reference_games} < "
-                        f"{self.config.min_highrating_games})"
-                    )
-                elif player_reference_source == "master":
-                    fallback_note = (
-                        f"; fallback total {highrating_total}"
-                        if highrating_total > 0
-                        else "; no high-rating fallback data"
-                    )
-                    reason = (
-                        f"Master games below threshold ({total_reference_games} < "
-                        f"{self.config.min_highrating_games}){fallback_note}"
-                    )
-                elif player_reference_source == "combined":
-                    reason = (
-                        "Combined master/high-rating games below threshold "
-                        f"({total_reference_games} < {self.config.min_highrating_games}; "
-                        f"master={master_total}, high-rating={highrating_total})"
-                    )
-                else:
-                    reason = (
-                        f"Reference games below threshold ({total_reference_games} < "
-                        f"{self.config.min_highrating_games})"
-                    )
+            if not player_reference_stats:
+                reason = "No master game data available"
             elif player_reference_stats and player_reference_stats.get("moves"):
-                if player_reference_source == "highrating":
-                    reason = "No high-rating moves meet popularity threshold"
-                elif player_reference_source == "master":
-                    reason = "No master moves meet popularity threshold"
-                elif player_reference_source == "combined":
-                    reason = (
-                        "No combined master/high-rating moves meet popularity threshold"
-                    )
-                else:
-                    reason = "No reference moves meet popularity threshold"
+                reason = "No master moves meet popularity threshold"
             else:
-                if player_reference_source == "highrating":
-                    reason = "No high-rating fallback data available"
-                elif player_reference_source == "master":
-                    if master_total > 0:
-                        reason = "No master moves available"
-                    else:
-                        reason = "No master game data available"
-                elif player_reference_source == "combined":
-                    if combined_total > 0:
-                        reason = "No combined master/high-rating moves available"
-                    else:
-                        reason = "No combined master/high-rating data available"
+                master_total = total_games(master_stats)
+                if master_total > 0:
+                    reason = "No master moves available"
                 else:
-                    reason = "No reference game data available"
+                    reason = "No master game data available"
         else:
             has_lichess_moves = bool(lichess_stats and lichess_stats.get("moves"))
             if not has_lichess_moves:

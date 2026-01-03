@@ -1,12 +1,16 @@
 # Postprocessing configuration for PGN repertoire files
 
-input_file: "outputs/rep_white-e4.pgn"
-output_file: "outputs/processed_white.pgn"
+input_file: "outputs/white_e4.pgn"
 initial_lines:
-  - e4
+  - e4 e5
+  - e4 c5
+  - e4 c6
+  - e4 e6
+  - e4 g6
+  - e4 b6
+  - e4 Nf6
 
 # input_file: "outputs/rep_black-line-1.pgn"
-# output_file: "outputs/processed_black.pgn"
 # initial_lines:
 #   - e4 e5
 #   - d4 c5
@@ -16,7 +20,7 @@ initial_lines:
 max_depth: 15
 
 # Minimum total games required to keep a position (0 to disable)
-min_games: 20000
+min_games: 10000
 
 # Granular comment removal options
 # Remove advantage (A:) field from comments
@@ -29,3 +33,20 @@ remove_popularity: true
 remove_game_count: true
 # Remove alternatives (Alts:) field from comments
 remove_alternatives: false
+
+# Move annotation glyphs (NAGs) configuration
+# Enable adding opponent move indicators based on terminal advantage deltas
+add_move_indicators: true
+
+# Delta thresholds for move indicators (as decimal percentages)
+# Threshold for ! (good move) - delta > this value
+good_threshold: 0.05
+# Threshold for ?! (inaccuracy) - delta < this value
+inaccuracy_threshold: -0.1
+# Threshold for ? (mistake) - delta < this value (more negative)
+mistake_threshold: -0.2
+# Threshold for ?? (blunder) - delta < this value (very negative)
+blunder_threshold: -0.3
+
+# Use traditional symbols (!, ?, !!, ??) or NAG codes ($1, $2, $3, $4)
+use_nag_codes: false

@@ -213,7 +213,6 @@ class PGNWriter:
 
         base_path = Path(output_path)
         suffix = base_path.suffix or ".pgn"
-        stem = base_path.stem if base_path.suffix else base_path.name
         parent = base_path.parent
 
         output_paths: list[str] = []
@@ -223,8 +222,17 @@ class PGNWriter:
             )
             game = self.create_pgn_game(root, initial_moves_str)
 
-            label = _slug_initial_moves(initial_moves_str, fallback=f"line-{i + 1}")
-            path = parent / f"{stem}-{label}{suffix}"
+            # Generate filename based on side and initial moves
+            # If initial_moves_str is empty, just use side (e.g., "white.pgn", "black.pgn")
+            # Otherwise concatenate moves without separator (e.g., "white_e4e5.pgn")
+            side_prefix = "white" if self.is_white else "black"
+            if initial_moves_str:
+                label = _slug_initial_moves(initial_moves_str, fallback=f"line-{i + 1}")
+                filename = f"{side_prefix}_{label}{suffix}"
+            else:
+                filename = f"{side_prefix}{suffix}"
+
+            path = parent / filename
             # Use FileExporter for proper line wrapping (< 80 chars per line)
             # This ensures PGN files comply with the specification
             with open(path, "w", encoding="utf-8") as f:
@@ -296,7 +304,7 @@ Configuration:
   Rating brackets: {", ".join(map(str, self.config.ratings))}
   Time controls: {", ".join(self.config.time_control)}
   Min opponent popularity: {self.config.min_opponent_popularity:.1%}
-  Min high-rating popularity: {self.config.min_highrating_popularity:.1%}
+  Min master popularity: {self.config.min_highrating_popularity:.1%}
 """
 
         return summary

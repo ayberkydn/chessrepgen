@@ -339,3 +339,61 @@ def test_filter_excludes_other_games_when_initial_lines_provided(tmp_path):
     data = Path(outputs[0]).read_text()
     assert data.count('InitialMoves "e4 e6"') == 1
     assert 'InitialMoves "e4 e5"' not in data
+
+
+def test_add_move_indicators_symbols(tmp_path):
+    input_file = tmp_path / "repertoire.pgn"
+    input_file.write_text(
+        textwrap.dedent(
+            """
+            [Event "Test"]
+            [White "?"]
+            [Black "?"]
+            [Result "*"]
+            [RepertoireSide "white"]
+
+            1. e4 {T:10.0} e5 {T:0.0} 2. Nf3 {T:0.0} 2... Nc6 {T:7.0} 3. Bb5 {T:7.0} *
+            """
+        ).strip()
+        + "\n"
+    )
+
+    processor = PGNPostprocessor(add_move_indicators=True, use_nag_codes=False)
+    outputs = processor.process(str(input_file), str(tmp_path / "processed.pgn"))
+
+    assert len(outputs) == 1
+    data = Path(outputs[0]).read_text()
+    assert "e5!" in data
+    assert "Nc6?!" in data
+    assert "e4!" not in data
+    assert "Nf3!" not in data
+    assert "Nf3?" not in data
+    assert "$1" not in data
+
+
+def test_add_move_indicators_codes(tmp_path):
+    input_file = tmp_path / "repertoire.pgn"
+    input_file.write_text(
+        textwrap.dedent(
+            """
+            [Event "Test"]
+            [White "?"]
+            [Black "?"]
+            [Result "*"]
+            [RepertoireSide "white"]
+
+            1. e4 {T:10.0} e5 {T:0.0} 2. Nf3 {T:0.0} 2... Nc6 {T:7.0} 3. Bb5 {T:7.0} *
+            """
+        ).strip()
+        + "\n"
+    )
+
+    processor = PGNPostprocessor(add_move_indicators=True, use_nag_codes=True)
+    outputs = processor.process(str(input_file), str(tmp_path / "processed.pgn"))
+
+    assert len(outputs) == 1
+    data = Path(outputs[0]).read_text()
+    assert "e5 $1" in data
+    assert "Nc6 $6" in data
+    assert "e4 $1" not in data
+    assert "Nf3 $5" not in data

@@ -7,9 +7,6 @@ from dataclasses import dataclass, field
 
 import yaml
 
-PLAYER_POPULARITY_RATINGS = [2000, 2200, 2500]
-PLAYER_POPULARITY_SPEEDS = ["rapid", "classical"]
-
 
 @dataclass
 class Config:
@@ -18,7 +15,7 @@ class Config:
     time_control: list[str] = field(default_factory=lambda: ["rapid", "blitz"])
     ratings: list[int] = field(default_factory=lambda: [1600, 1800, 2000, 2200, 2500])
     min_opponent_popularity: float = 0.1
-    # Popularity threshold for player moves using master (or fallback) reference data
+    # Popularity threshold for player moves using master reference data
     min_highrating_popularity: float = 0.1
     # Allow alternative player moves whose advantage is close to the best move
     advantage_tolerance: float = 0.02
@@ -26,17 +23,24 @@ class Config:
     advantage_aggregation: str = "median"
     # Minimum popularity (relative) for a move to be considered as baseline for advantage comparison
     min_advantage_baseline_popularity: float = 0.1
-    # Minimum master games required before falling back to high-rating Explorer data
-    min_highrating_games: int = 200
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
-    highrating_fallback: bool = True  # Whether to fall back to high-rating data when master games are insufficient
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
+    master_cache_file: str = "master_cache.db"
+    stockfish_cache_file: str = "stockfish_cache.db"
     use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
     )
     prune_non_best_moves: bool = False  # Prune non-best player moves after evaluation
+    use_stockfish: bool = False  # Whether to use Stockfish evaluation
+    stockfish_path: str = "stockfish"  # Path to Stockfish executable
+    stockfish_depth: int = 15  # Stockfish search depth
+    stockfish_threads: int = 4  # Number of Stockfish threads
+    terminal_advantage_weight: float = (
+        0.5  # Weight for terminal advantage in terminal score
+    )
+    stockfish_score_weight: float = 0.5  # Weight for Stockfish score in terminal score
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Config":
@@ -47,7 +51,6 @@ class Config:
                 if data:
                     key_map = {
                         "min_master_popularity": "min_highrating_popularity",
-                        "min_master_games": "min_highrating_games",
                     }
                     for key, value in data.items():
                         mapped_key = key_map.get(key, key)
@@ -77,13 +80,28 @@ class Config:
                 "min_advantage_baseline_popularity must be between 0 and 1"
             )
 
-        if self.min_highrating_games < 0:
-            raise ValueError("min_highrating_games must be non-negative")
-
         agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
         if agg_method not in {"mean", "median"}:
             raise ValueError("advantage_aggregation must be either 'mean' or 'median'")
         self.advantage_aggregation = agg_method
+
+        if not 0 <= self.terminal_advantage_weight <= 1:
+            raise ValueError("terminal_advantage_weight must be between 0 and 1")
+
+        if not 0 <= self.stockfish_score_weight <= 1:
+            raise ValueError("stockfish_score_weight must be between 0 and 1")
+
+        total_weight = self.terminal_advantage_weight + self.stockfish_score_weight
+        if abs(total_weight - 1.0) > 0.001:
+            raise ValueError(
+                f"terminal_advantage_weight + stockfish_score_weight must equal 1.0 (got {total_weight})"
+            )
+
+        if self.stockfish_depth < 0:
+            raise ValueError("stockfish_depth must be non-negative")
+
+        if self.stockfish_threads < 0:
+            raise ValueError("stockfish_threads must be non-negative")
 
         valid_time_controls = [
             "ultraBullet",
@@ -146,7 +164,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--min-highrating-popularity",
         type=float,
-        help="Minimum popularity for player moves in master/high-rating reference games (0-1, used only when highrating_fallback is enabled)",
+        help="Minimum popularity for player moves in master reference games (0-1)",
     )
 
     parser.add_argument(
@@ -167,26 +185,6 @@ def parse_arguments() -> argparse.Namespace:
         help="Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison",
     )
 
-    parser.add_argument(
-        "--min-highrating-games",
-        type=int,
-        help="Minimum master games required (if highrating_fallback is enabled, falls back to high-rating data below this threshold)",
-    )
-
-    parser.add_argument(
-        "--highrating-fallback",
-        dest="highrating_fallback",
-        action="store_true",
-        help="Enable fallback to high-rating data when master games are insufficient (default: True)",
-    )
-
-    parser.add_argument(
-        "--no-highrating-fallback",
-        dest="highrating_fallback",
-        action="store_false",
-        help="Disable fallback to high-rating data when master games are insufficient",
-    )
-
     # Backward compatibility for legacy flags
     parser.add_argument(
         "--min-master-popularity",
@@ -196,18 +194,25 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--min-master-games",
-        type=int,
-        dest="min_highrating_games",
-        help=argparse.SUPPRESS,
-    )
-
-    parser.add_argument(
         "--output", type=str, dest="output_file", help="Output PGN file path"
     )
 
     parser.add_argument(
         "--cache", type=str, dest="cache_file", help="Cache database file path"
+    )
+
+    parser.add_argument(
+        "--master-cache",
+        type=str,
+        dest="master_cache_file",
+        help="Master games cache database file path",
+    )
+
+    parser.add_argument(
+        "--stockfish-cache",
+        type=str,
+        dest="stockfish_cache_file",
+        help="Stockfish evaluation cache database file path",
     )
 
     parser.add_argument(
@@ -246,9 +251,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Keep all player moves even if they are suboptimal",
     )
 
-    parser.set_defaults(
-        use_proxy=None, prune_non_best_moves=None, highrating_fallback=True
-    )
+    parser.set_defaults(use_proxy=None, prune_non_best_moves=None)
 
     return parser.parse_args()
 
@@ -268,7 +271,6 @@ class PostprocessConfig:
     """Configuration for PGN postprocessing."""
 
     input_file: str = ""
-    output_file: str = ""
     initial_lines: list[str] = field(default_factory=list)
     max_depth: int | None = None
     min_games: int = 0
@@ -278,6 +280,13 @@ class PostprocessConfig:
     remove_popularity: bool = False  # Remove P: field
     remove_game_count: bool = False  # Remove G: field
     remove_alternatives: bool = False  # Remove Alts: field
+    # Move annotation glyphs (NAGs) options
+    add_move_indicators: bool = False  # Enable opponent move indicators
+    good_threshold: float = 0.05  # ! delta threshold
+    inaccuracy_threshold: float = -0.05  # ?! delta threshold
+    mistake_threshold: float = -0.10  # ? delta threshold
+    blunder_threshold: float = -0.15  # ?? delta threshold
+    use_nag_codes: bool = False  # Use $N codes instead of symbols
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "PostprocessConfig":
@@ -324,8 +333,6 @@ class PostprocessConfig:
 
         if not self.input_file:
             raise ValueError("Input file is required")
-        if not self.output_file:
-            raise ValueError("Output file is required")
         if self.max_depth is not None and self.max_depth < 0:
             raise ValueError("max_depth must be non-negative when set")
         if self.min_games < 0:
@@ -349,13 +356,6 @@ def parse_postprocess_arguments() -> argparse.Namespace:
         type=str,
         dest="input_file",
         help="Input PGN file path",
-    )
-
-    parser.add_argument(
-        "--output",
-        type=str,
-        dest="output_file",
-        help="Output PGN file path",
     )
 
     parser.add_argument(
@@ -433,6 +433,48 @@ def parse_postprocess_arguments() -> argparse.Namespace:
         action="store_true",
         default=None,
         help="Remove alternatives (Alts:) field from comments",
+    )
+
+    parser.add_argument(
+        "--add-move-indicators",
+        action="store_true",
+        default=None,
+        help="Add opponent move indicators based on terminal advantage deltas",
+    )
+
+    parser.add_argument(
+        "--good-threshold",
+        type=float,
+        default=None,
+        help="Delta threshold for good move (default: 0.05)",
+    )
+
+    parser.add_argument(
+        "--inaccuracy-threshold",
+        type=float,
+        default=None,
+        help="Delta threshold for inaccuracy (default: -0.05)",
+    )
+
+    parser.add_argument(
+        "--mistake-threshold",
+        type=float,
+        default=None,
+        help="Delta threshold for mistake (default: -0.10)",
+    )
+
+    parser.add_argument(
+        "--blunder-threshold",
+        type=float,
+        default=None,
+        help="Delta threshold for blunder (default: -0.15)",
+    )
+
+    parser.add_argument(
+        "--use-nag-codes",
+        action="store_true",
+        default=None,
+        help="Use numeric annotation codes ($1, $2, etc.) instead of symbols (!, ?, etc.)",
     )
 
     parser.add_argument(

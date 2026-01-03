@@ -6,7 +6,7 @@ from src.models.graph import RepertoireEdge, RepertoireNode
 from src.models.stats import MoveStats
 from src.services.pruner import RepertoirePruner
 from src.services.repertoire_builder import RepertoireBuilder
-from src.services.stats import calculate_moves_weighted_advantage, merge_reference_stats
+from src.services.stats import calculate_moves_weighted_advantage
 
 
 def make_builder(side: str = "white") -> RepertoireBuilder:
@@ -15,63 +15,6 @@ def make_builder(side: str = "white") -> RepertoireBuilder:
     builder.is_white = side == "white"
     builder.pruner = RepertoirePruner(builder.config, builder.is_white)
     return builder
-
-
-def test_merge_reference_stats_combines_counts_and_ratings():
-    master_stats = {
-        "white": 10,
-        "draws": 5,
-        "black": 8,
-        "moves": [
-            {
-                "uci": "e2e4",
-                "san": "e4",
-                "white": 3,
-                "draws": 1,
-                "black": 2,
-                "averageRating": 2300,
-                "opening": "King's Pawn",
-            },
-            {"uci": "d2d4", "san": "d4", "white": 2, "draws": 1, "black": 1},
-        ],
-    }
-
-    highrating_stats = {
-        "white": 5,
-        "draws": 6,
-        "black": 4,
-        "moves": [
-            {
-                "uci": "e2e4",
-                "san": "e4",
-                "white": 4,
-                "draws": 2,
-                "black": 4,
-                "averageRating": 2100,
-            },
-            {
-                "uci": "c2c4",
-                "san": "c4",
-                "white": 1,
-                "draws": 1,
-                "black": 2,
-                "averageRating": 2200,
-            },
-        ],
-    }
-
-    merged = merge_reference_stats(master_stats, highrating_stats)
-
-    assert merged["white"] == 15
-    assert merged["draws"] == 11
-    assert merged["black"] == 12
-
-    e4_entry = next(move for move in merged["moves"] if move["uci"] == "e2e4")
-    assert e4_entry["white"] == 7
-    assert e4_entry["draws"] == 3
-    assert e4_entry["black"] == 6
-    assert pytest.approx(2175.0, rel=1e-4) == e4_entry["averageRating"]
-    assert merged["moves"][0]["uci"] == "e2e4"
 
 
 def test_calculate_moves_weighted_advantage_respects_aggregation():

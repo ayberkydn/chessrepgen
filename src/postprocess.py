@@ -32,7 +32,6 @@ def main():
         config = load_postprocess_config(args)
 
         logger.info("Input file: %s", config.input_file)
-        logger.info("Output file: %s", config.output_file)
         if config.initial_lines:
             logger.info("Filtering initial moves: %s", ", ".join(config.initial_lines))
         if config.max_depth is not None:
@@ -55,6 +54,11 @@ def main():
         if granular_options:
             logger.info("Removing comment fields: %s", ", ".join(granular_options))
 
+        if config.add_move_indicators:
+            logger.info(
+                "Adding opponent move indicators based on terminal advantage deltas"
+            )
+
         processor = PGNPostprocessor(
             max_depth=config.max_depth,
             min_games=config.min_games,
@@ -64,9 +68,17 @@ def main():
             remove_game_count=config.remove_game_count,
             remove_alternatives=config.remove_alternatives,
             initial_lines=config.initial_lines,
+            add_move_indicators=config.add_move_indicators,
+            good_threshold=config.good_threshold,
+            inaccuracy_threshold=config.inaccuracy_threshold,
+            mistake_threshold=config.mistake_threshold,
+            blunder_threshold=config.blunder_threshold,
+            use_nag_codes=config.use_nag_codes,
         )
 
-        processor.process(config.input_file, config.output_file)
+        processor.process(
+            config.input_file, config.input_file.replace(".pgn", "_processed.pgn")
+        )
 
         logger.info("Postprocessing complete!")
         return 0

@@ -49,15 +49,10 @@ def setup_logging(level=logging.INFO):
 
 
 def _output_path_for_side(base_path: str, side: str) -> str:
-    """Derive side-specific PGN path while preserving original naming."""
+    """Return the base output path (side is now handled in PGNWriter)."""
     path = Path(base_path)
     if not path.is_absolute():
         path = Path("outputs") / path
-
-    if path.suffix == ".pgn":
-        path = path.with_name(f"{path.stem}_{side}{path.suffix}")
-    else:
-        path = path.with_name(f"{path.name}_{side}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
@@ -99,6 +94,7 @@ def run_for_side(config, side: str, initial_moves):
     output_path = _output_path_for_side(config.output_file, side)
     if roots:
         builder.compute_terminal_advantages(roots)
+        builder.evaluate_and_combine_terminal_scores(roots)
     logger.info(
         "Writing %s repertoire (one PGN per initial move) using base %s...",
         side,

@@ -60,14 +60,6 @@ class MoveEvaluator:
                 + player_reference_stats.get("black", 0)
             )
 
-            if total_reference_games < self.config.min_highrating_games:
-                logger.debug(
-                    "Insufficient reference games (%s < %s) - terminating",
-                    total_reference_games,
-                    self.config.min_highrating_games,
-                )
-                return []
-
             allowed_moves = set()
             for move_data in player_reference_stats["moves"]:
                 uci = move_data.get("uci", "")

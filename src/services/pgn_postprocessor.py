@@ -10,6 +10,29 @@ from pathlib import Path
 import chess.pgn
 
 logger = logging.getLogger(__name__)
+TADV_REGEX = re.compile(r"(?:TS|T):\s*([+-]?\d+(?:\.\d+)?)")
+NAG_SYMBOLS = {
+    1: "!",
+    2: "?",
+    3: "!!",
+    4: "??",
+    5: "!?",
+    6: "?!",
+}
+
+
+class SymbolNagExporter(chess.pgn.FileExporter):
+    """Export NAGs using symbolic glyphs instead of $N codes."""
+
+    def visit_nag(self, nag: int) -> None:
+        if self.comments and (self.variations or not self.variation_depth):
+            symbol = NAG_SYMBOLS.get(nag)
+            if symbol:
+                # Attach the symbol to the preceding SAN token (e4!)
+                self.current_line = self.current_line.rstrip()
+                self.current_line += symbol + " "
+            else:
+                self.write_token(f"${nag} ")
 
 
 class PGNPostprocessor:
@@ -25,6 +48,12 @@ class PGNPostprocessor:
         remove_game_count: bool = False,
         remove_alternatives: bool = False,
         initial_lines: list[str] | None = None,
+        add_move_indicators: bool = False,
+        good_threshold: float = 0.05,
+        inaccuracy_threshold: float = -0.05,
+        mistake_threshold: float = -0.10,
+        blunder_threshold: float = -0.15,
+        use_nag_codes: bool = False,
     ):
         self.max_depth = max_depth
         self.min_games = min_games
@@ -33,6 +62,12 @@ class PGNPostprocessor:
         self.remove_popularity = remove_popularity
         self.remove_game_count = remove_game_count
         self.remove_alternatives = remove_alternatives
+        self.add_move_indicators = add_move_indicators
+        self.good_threshold = good_threshold
+        self.inaccuracy_threshold = inaccuracy_threshold
+        self.mistake_threshold = mistake_threshold
+        self.blunder_threshold = blunder_threshold
+        self.use_nag_codes = use_nag_codes
 
         normalized_moves: list[str] = []
         display_moves: list[str] = []
@@ -77,22 +112,35 @@ class PGNPostprocessor:
             logger.info("Processing %d game(s) from %s", len(games), input_path)
 
         written_paths: list[str] = []
-        base_output = Path(output_path)
-        suffix = base_output.suffix or ".pgn"
-        stem = base_output.stem if base_output.suffix else base_output.name
-        parent = base_output.parent
-        multi_output = len(selected_groups) > 1
+
+        # Extract base filename from input file (without extension)
+        input_file = Path(input_path)
+        input_stem = input_file.stem
+
+        # Determine output directory and suffix
+        if output_path:
+            base_output = Path(output_path)
+            suffix = base_output.suffix or ".pgn"
+            parent = base_output.parent
+        else:
+            # Auto-generate: use input file's directory
+            base_output = input_file.parent / f"{input_stem}.pgn"
+            parent = input_file.parent
+            suffix = ".pgn"
 
         for index, (initial_moves_label, game_group) in enumerate(selected_groups):
             for game in game_group:
                 self._process_game(game)
 
-            output_file = (
-                parent
-                / f"{stem}-{_slugify_initial_moves(initial_moves_label, f'line-{index + 1}')}{suffix}"
-                if multi_output
-                else base_output
-            )
+            # Generate output filename: input_stem__initial_moves.pgn
+            # If no initial_lines, just use the provided output_path
+            if self.initial_lines:
+                initial_moves_slug = _slugify_initial_moves(
+                    initial_moves_label, f"line-{index + 1}"
+                )
+                output_file = parent / f"{input_stem}__{initial_moves_slug}{suffix}"
+            else:
+                output_file = base_output
 
             self._write_games(game_group, output_file)
             written_paths.append(str(output_file))
@@ -170,6 +218,10 @@ class PGNPostprocessor:
 
         # Ensure lines end with the repertoire player's move
         self._prune_incomplete_player_responses(game, is_white)
+
+        # Add move indicators before comment filtering removes advantage data
+        if self.add_move_indicators:
+            self._apply_nags_to_game(game, is_white)
 
         # Filter comments after pruning if any removal options are set
         if any(
@@ -305,13 +357,79 @@ class PGNPostprocessor:
 
         return ",".join(filtered_parts)
 
+    def _add_nag_to_node(self, node: chess.pgn.GameNode, is_white: bool) -> None:
+        """Add move annotation glyphs (NAGs) based on terminal advantage deltas.
+
+        Compares T: values against the previous ply and applies thresholds
+        from the mover's perspective (opponent moves only).
+
+        Maps delta thresholds to NAG codes:
+        - >= 0.05: ! (good move) -> $1
+        - <= -0.05: ?! (dubious move) -> $6
+        - <= -0.10: ? (mistake) -> $2
+        - <= -0.15: ?? (blunder) -> $4
+        """
+        if not self.add_move_indicators:
+            return
+
+        move_is_white = not node.board().turn
+        if move_is_white == is_white:
+            return
+
+        current_tadv = _parse_terminal_advantage(node.comment)
+        prev_tadv = _parse_terminal_advantage(
+            node.parent.comment if node.parent else None
+        )
+        if current_tadv is None or prev_tadv is None:
+            return
+
+        # Convert to the mover's perspective (T: is from repertoire side).
+        delta = current_tadv - prev_tadv
+        mover_delta = -delta
+
+        # Determine NAG based on thresholds
+        if mover_delta >= self.good_threshold:
+            nag_code = chess.pgn.NAG_GOOD_MOVE
+        elif mover_delta <= self.blunder_threshold:
+            nag_code = chess.pgn.NAG_BLUNDER
+        elif mover_delta <= self.mistake_threshold:
+            nag_code = chess.pgn.NAG_MISTAKE
+        elif mover_delta <= self.inaccuracy_threshold:
+            nag_code = chess.pgn.NAG_DUBIOUS_MOVE
+        else:
+            # No NAG for neutral moves
+            return
+
+        # Apply NAG to node
+        node.nags.add(nag_code)
+
+    def _apply_nags_to_game(self, game: chess.pgn.Game, is_white: bool) -> None:
+        """Recursively apply NAGs to all nodes in the game."""
+        if self.add_move_indicators:
+            self._apply_nags_recursive(game, game, is_white)
+
+    def _apply_nags_recursive(
+        self, node: chess.pgn.GameNode, game: chess.pgn.Game, is_white: bool
+    ) -> None:
+        """Recursively apply NAGs starting from a node."""
+        # Skip the root game node (no move)
+        if node != game:
+            self._add_nag_to_node(node, is_white)
+
+        for variation in node.variations:
+            self._apply_nags_recursive(variation, game, is_white)
+
     def _write_games(self, games: list[chess.pgn.Game], output_file: Path) -> None:
         """Write processed games to disk."""
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_file, "w", encoding="utf-8") as f:
             for i, game in enumerate(games):
-                exporter = chess.pgn.FileExporter(f)
+                exporter = (
+                    chess.pgn.FileExporter(f)
+                    if self.use_nag_codes
+                    else SymbolNagExporter(f)
+                )
                 game.accept(exporter)
                 if i < len(games) - 1:
                     f.write("\n")
@@ -335,6 +453,19 @@ def _parse_game_count(comment: str) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+def _parse_terminal_advantage(comment: str | None) -> float | None:
+    """Parse terminal advantage from comment string (T: value in percent)."""
+    if not comment:
+        return None
+    match = TADV_REGEX.search(comment)
+    if not match:
+        return None
+    try:
+        return float(match.group(1)) / 100.0
+    except ValueError:
+        return None
 
 
 def _normalize_initial_moves(moves: str) -> str:

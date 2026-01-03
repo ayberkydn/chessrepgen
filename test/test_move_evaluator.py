@@ -5,7 +5,6 @@ from src.services.evaluator import MoveEvaluator
 def test_player_move_selection_filters_by_reference_and_tolerance():
     config = Config()
     config.min_highrating_popularity = 0.2
-    config.min_highrating_games = 100
     config.advantage_tolerance = 0.05
     evaluator = MoveEvaluator(config, side="white")
 

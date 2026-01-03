@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from models.graph import RepertoireEdge, RepertoireNode
 
 from .stats import calculate_moves_weighted_advantage
+from .stockfish_evaluator import StockfishEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -255,3 +256,57 @@ class RepertoirePruner:
             child = edge.child
             if child and not edge.is_terminal:
                 self._prune_node(child, visited)
+
+    def evaluate_and_combine_terminal_scores(
+        self, roots: list[RepertoireNode]
+    ) -> None:
+        """
+        Evaluate terminal nodes with Stockfish and combine with terminal_advantage.
+
+        The final terminal_advantage becomes a weighted sum of the original
+        terminal_advantage and the stockfish_score.
+        """
+        if not getattr(self.config, "use_stockfish", False):
+            return
+
+        # Evaluate terminal nodes with Stockfish
+        sf_evaluator = StockfishEvaluator(self.config, self.is_white)
+        sf_evaluator.evaluate_terminal_nodes(roots)
+
+        # Combine scores for terminal nodes
+        ta_weight = getattr(self.config, "terminal_advantage_weight", 0.5)
+        sf_weight = getattr(self.config, "stockfish_score_weight", 0.5)
+
+        visited: set[str] = set()
+
+        def combine_scores(node: RepertoireNode) -> None:
+            if node.key in visited:
+                return
+            visited.add(node.key)
+
+            # Terminal nodes: combine scores
+            if not node.edges:
+                if (
+                    node.terminal_advantage is not None
+                    and node.stockfish_score is not None
+                ):
+                    node.terminal_advantage = (
+                        ta_weight * node.terminal_advantage
+                        + sf_weight * node.stockfish_score
+                    )
+                elif node.stockfish_score is not None:
+                    # If only stockfish score available, use it directly
+                    node.terminal_advantage = node.stockfish_score
+                # If neither available, terminal_advantage stays as is (None)
+            else:
+                for edge in node.edges:
+                    if edge.child:
+                        combine_scores(edge.child)
+
+        for root in roots:
+            combine_scores(root)
+
+        # Recompute terminal advantages from leaf to root after combining
+        cache: dict[str, float | None] = {}
+        for root in roots:
+            self._compute_terminal_advantage(root, cache)
