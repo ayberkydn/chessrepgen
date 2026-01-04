@@ -41,93 +41,31 @@ class MoveEvaluator:
         # Log position evaluation start
         turn_type = "Player" if is_player_turn else "Opponent"
         logger.debug(
-            "Evaluating position for %s turn at depth %d - Lichess data: %s, Reference data: %s",
+            "Evaluating position for %s turn at depth %d - Lichess data: %s",
             turn_type,
             depth,
             "available" if lichess_stats else "unavailable",
-            "available" if player_reference_stats else "unavailable",
         )
 
         if is_player_turn and lichess_stats and lichess_stats.get("moves"):
-            # For player moves: filter by reference popularity
-            if not player_reference_stats or not player_reference_stats.get("moves"):
-                logger.debug("No reference data available for player move filtering")
-                return []
-
-            total_reference_games = (
-                player_reference_stats.get("white", 0)
-                + player_reference_stats.get("draws", 0)
-                + player_reference_stats.get("black", 0)
-            )
-
-            allowed_moves = set()
-            for move_data in player_reference_stats["moves"]:
-                uci = move_data.get("uci", "")
-                if not uci:
-                    continue
-                move_total = (
-                    move_data.get("white", 0)
-                    + move_data.get("draws", 0)
-                    + move_data.get("black", 0)
-                )
-                if total_reference_games == 0:
-                    continue
-                popularity = move_total / total_reference_games
-                popularity_threshold = self.config.min_highrating_popularity
-
-                if popularity >= popularity_threshold:
-                    allowed_moves.add(uci)
-
-            if not allowed_moves:
-                popularity_threshold = self.config.min_highrating_popularity
-
-                logger.debug(
-                    "No moves meet reference popularity threshold %.1f%%",
-                    popularity_threshold * 100,
-                )
-                return []
-
-            # Keep only moves whose popularity clears the reference filter
+            # For player moves: filter by advantage tolerance only
             candidate_moves: list[MoveStats] = []
             for move_data in lichess_stats["moves"]:
-                uci = move_data.get("uci", "")
-                if uci in allowed_moves:
-                    move_stats = self.parse_move_data(move_data)
-                    candidate_moves.append(move_stats)
+                move_stats = self.parse_move_data(move_data)
+                candidate_moves.append(move_stats)
 
             if not candidate_moves:
                 return []
 
-            # Calculate total games for popularity calculation
-            total_games = sum(m.total_games for m in candidate_moves)
-
-            # Find baseline move: best advantage among moves that meet popularity threshold
-            min_baseline_pop = getattr(
-                self.config, "min_advantage_baseline_popularity", 0.1
+            # Find best advantage among all moves
+            baseline_advantage = max(
+                (m.advantage(self.is_white) for m in candidate_moves), default=None
             )
-            baseline_advantage: float | None = None
-
-            for move_stats in candidate_moves:
-                popularity = (
-                    move_stats.total_games / total_games if total_games > 0 else 0
-                )
-                if popularity >= min_baseline_pop:
-                    advantage_value = move_stats.advantage(self.is_white)
-                    if (
-                        baseline_advantage is None
-                        or advantage_value > baseline_advantage
-                    ):
-                        baseline_advantage = advantage_value
-
-            # If no move meets popularity threshold, fall back to absolute best move
-            if baseline_advantage is None:
-                baseline_advantage = max(
-                    (m.advantage(self.is_white) for m in candidate_moves), default=None
-                )
 
             if baseline_advantage is None:
                 return []
 
+            # Keep moves within advantage tolerance of best move
             tolerance = getattr(self.config, "advantage_tolerance", 0.0)
             for move_stats in candidate_moves:
                 advantage_value = move_stats.advantage(self.is_white)
@@ -136,8 +74,7 @@ class MoveEvaluator:
 
             # Log player move filtering results
             logger.debug(
-                "Player move filtering: %d total Lichess moves, %d passed reference filter, %d passed winrate tolerance %.1f%%",
-                len(lichess_stats.get("moves", [])),
+                "Player move filtering: %d total moves, %d passed advantage tolerance %.1f%%",
                 len(candidate_moves),
                 len(moves),
                 tolerance * 100,

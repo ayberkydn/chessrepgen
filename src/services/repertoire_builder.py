@@ -9,7 +9,7 @@ import chess
 
 from models.graph import RepertoireEdge, RepertoireLine, RepertoireNode
 
-from .cache import ChessCache, MasterCache
+from .cache import ChessCache
 from .evaluator import MoveEvaluator
 from .lichess_client import LichessClient
 from .pruner import RepertoirePruner
@@ -43,7 +43,6 @@ class RepertoireBuilder:
 
         self.client = LichessClient(proxies=proxies)
         self.cache = ChessCache(config.cache_file)
-        self.master_cache = MasterCache(config.master_cache_file)
         self.evaluator = MoveEvaluator(config, side)
         self.pruner = RepertoirePruner(config, self.is_white)
 
@@ -204,21 +203,12 @@ class RepertoireBuilder:
             self.config.ratings,
             self.config.time_control,
         )
-        cached_master_stats = self.master_cache.get_master_stats(fen)
         lichess_stats = cached_lichess_stats
-        master_stats = cached_master_stats
-        player_reference_stats = None
-        player_reference_source: str | None = None
         lichess_stats_fetched_from_api = False
 
         # Log cache status
-        cache_status = []
         if cached_lichess_stats:
-            cache_status.append("Lichess")
-        if cached_master_stats:
-            cache_status.append("Master")
-        if cache_status:
-            logger.debug("Cache hit for %s data", ", ".join(cache_status))
+            logger.debug("Cache hit for Lichess data")
         else:
             logger.debug("Cache miss - fetching from API")
 
@@ -245,44 +235,16 @@ class RepertoireBuilder:
                     self.config.time_control,
                 )
 
-        if not master_stats:
-            try:
-                logger.debug("Fetching master games data for position...")
-                master_stats = self.client.get_master_games(
-                    fen, request_context=f"Master | {request_context}"
-                )
-            except Exception:
-                logger.exception("Failed to fetch master game data")
-                master_stats = None
-            if master_stats:
-                logger.debug("Successfully fetched and cached master games data")
-                self.master_cache.set_master_stats(fen, master_stats)
-
-        if master_stats:
-            player_reference_stats = master_stats
-            player_reference_source = "master"
-
-        # Log final data source summary
-        data_sources = []
-        if lichess_stats:
-            data_sources.append("Lichess")
-        if player_reference_stats:
-            data_sources.append(f"Reference ({player_reference_source})")
-
         if lichess_stats_fetched_from_api:
             lichess_total = total_games(lichess_stats)
             logger.info(
-                "Position data ready - Sources: %s - Lichess games: %d",
-                ", ".join(data_sources) if data_sources else "None",
+                "Position data ready - Lichess games: %d",
                 lichess_total,
             )
 
         return (
             {
                 "lichess": lichess_stats,
-                "player_reference": player_reference_stats,
-                "player_reference_source": player_reference_source,
-                "master_reference": master_stats,
             },
             lichess_stats_fetched_from_api,
         )
@@ -379,7 +341,6 @@ class RepertoireBuilder:
             line=position_description,
         )
         lichess_stats = position_stats.get("lichess")
-        player_reference = position_stats.get("player_reference")
         player_turn = "White" if node.board.turn == chess.WHITE else "Black"
         side_indicator = "(player)" if node.is_player_turn else "(opponent)"
 
@@ -396,7 +357,7 @@ class RepertoireBuilder:
 
         candidate_moves = self.evaluator.evaluate_position(
             lichess_stats,
-            player_reference,
+            None,
             node.is_player_turn,
             depth_for_evaluator,
         )
@@ -612,34 +573,24 @@ class RepertoireBuilder:
         """Annotate node when no candidate moves are available."""
         position_stats = node.position_stats or {}
         lichess_stats = position_stats.get("lichess")
-        player_reference_stats = position_stats.get("player_reference")
-        player_reference_source = position_stats.get("player_reference_source")
-        master_stats = position_stats.get("master_reference")
 
         # Log detailed information about why no candidate moves were found
         logger.debug(
             "TERMINAL_MARGINS: No candidate moves found for position. "
             "Position: %s, FEN: %s, Player turn: %s, "
-            "Lichess moves available: %s, Player reference source: %s",
+            "Lichess moves available: %s",
             node.key,
             node.board.fen(),
             is_player_turn,
             bool(lichess_stats and lichess_stats.get("moves")),
-            player_reference_source,
         )
 
         if is_player_turn:
-            total_reference_games = total_games(player_reference_stats)
-            if not player_reference_stats:
-                reason = "No master game data available"
-            elif player_reference_stats and player_reference_stats.get("moves"):
-                reason = "No master moves meet popularity threshold"
+            has_lichess_moves = bool(lichess_stats and lichess_stats.get("moves"))
+            if not has_lichess_moves:
+                reason = "No player move data available"
             else:
-                master_total = total_games(master_stats)
-                if master_total > 0:
-                    reason = "No master moves available"
-                else:
-                    reason = "No master game data available"
+                reason = "No player moves meet advantage tolerance"
         else:
             has_lichess_moves = bool(lichess_stats and lichess_stats.get("moves"))
             if not has_lichess_moves:

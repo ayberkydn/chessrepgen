@@ -284,17 +284,6 @@ class LichessClient:
         result = self._make_request("lichess", params, request_context=request_context)
         return self._validate_position_response(result)
 
-    def get_master_games(
-        self, fen: str, moves: int = 12, request_context: str | None = None
-    ) -> dict | None:
-        params = {
-            "fen": fen,
-            "moves": moves,
-        }
-
-        result = self._make_request("master", params, request_context=request_context)
-        return self._validate_position_response(result)
-
     def get_position_stats(
         self,
         fen: str,

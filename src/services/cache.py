@@ -95,66 +95,6 @@ class ChessCache:
             logger.debug(f"Cached lichess stats for: {fen}")
 
 
-class MasterCache:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._local = threading.local()
-        self._init_db()
-
-    def _init_db(self) -> None:
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS master_stats (
-                    fen TEXT PRIMARY KEY,
-                    data TEXT NOT NULL
-                )
-                """
-            )
-            conn.commit()
-
-    @contextmanager
-    def _get_connection(self):
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        yield self._local.conn
-
-    def get_master_stats(self, fen: str) -> dict | None:
-        normalized_fen = normalize_fen(fen)
-        candidates = [normalized_fen, fen] if normalized_fen != fen else [fen]
-
-        with self._get_connection() as conn:
-            for candidate_fen in candidates:
-                cursor = conn.execute(
-                    """SELECT data FROM master_stats
-                       WHERE fen = ?""",
-                    (candidate_fen,),
-                )
-                row = cursor.fetchone()
-
-                if row:
-                    data = row[0]
-                    logger.debug(f"Cache hit for master stats: {fen}")
-                    return json.loads(data)
-
-            return None
-
-    def set_master_stats(self, fen: str, data: dict) -> None:
-        normalized_fen = normalize_fen(fen)
-        with self._get_connection() as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO master_stats
-                   (fen, data)
-                   VALUES (?, ?)""",
-                (
-                    normalized_fen,
-                    json.dumps(data),
-                ),
-            )
-            conn.commit()
-            logger.debug(f"Cached master stats for: {fen}")
-
-
 class StockfishCache:
     def __init__(self, db_path: str):
         self.db_path = db_path

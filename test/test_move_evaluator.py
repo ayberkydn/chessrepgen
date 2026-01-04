@@ -2,35 +2,25 @@ from src.config import Config
 from src.services.evaluator import MoveEvaluator
 
 
-def test_player_move_selection_filters_by_reference_and_tolerance():
+def test_player_move_selection_filters_by_advantage_tolerance():
     config = Config()
-    config.min_highrating_popularity = 0.2
     config.advantage_tolerance = 0.05
     evaluator = MoveEvaluator(config, side="white")
 
     lichess_stats = {
         "moves": [
-            {"uci": "e2e4", "san": "e4", "white": 60, "draws": 20, "black": 20},
-            {"uci": "d2d4", "san": "d4", "white": 45, "draws": 25, "black": 30},
-            {"uci": "c2c4", "san": "c4", "white": 30, "draws": 20, "black": 50},
+            {"uci": "e2e4", "san": "e4", "white": 60, "draws": 20, "black": 20},  # advantage: 0.4
+            {"uci": "d2d4", "san": "d4", "white": 45, "draws": 25, "black": 30},  # advantage: 0.15
+            {"uci": "c2c4", "san": "c4", "white": 30, "draws": 20, "black": 50},  # advantage: -0.15
         ]
     }
 
-    reference_stats = {
-        "white": 300,
-        "draws": 100,
-        "black": 100,
-        "moves": [
-            {"uci": "e2e4", "white": 200, "draws": 100, "black": 50},
-            {"uci": "d2d4", "white": 60, "draws": 20, "black": 20},
-            {"uci": "c2c4", "white": 25, "draws": 15, "black": 10},
-        ],
-    }
-
     moves = evaluator.evaluate_position(
-        lichess_stats, reference_stats, is_player_turn=True, depth=0
+        lichess_stats, None, is_player_turn=True, depth=0
     )
 
+    # Only e4 (0.4) should be within tolerance (0.05) of best advantage
+    # d4 (0.15) is 0.25 away from 0.4, which exceeds 0.05 tolerance
     assert [m.uci for m in moves] == ["e2e4"]
 
 

@@ -16,21 +16,16 @@ ratings:
 output_file: rep.pgn
 
 min_opponent_popularity: 0.01
-min_highrating_popularity: 0.005
 advantage_tolerance: 0.012
 
 # How to aggregate outcomes when evaluating move advantages (median or mean)
 advantage_aggregation: mean
 
-# Minimum popularity for a move to be used as baseline for advantage comparison
-min_advantage_baseline_popularity: 0.1
-
 # Minimum number of Lichess games to continue exploring a position
 min_lichess_games: 10000
 
 # Cache settings
-cache_file: chess_cache.db
-master_cache_file: master_cache.db
+cache_file: lichess_cache.db
 stockfish_cache_file: stockfish_cache.db
 
 prune_non_best_moves: true

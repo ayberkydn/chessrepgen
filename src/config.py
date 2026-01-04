@@ -15,18 +15,13 @@ class Config:
     time_control: list[str] = field(default_factory=lambda: ["rapid", "blitz"])
     ratings: list[int] = field(default_factory=lambda: [1600, 1800, 2000, 2200, 2500])
     min_opponent_popularity: float = 0.1
-    # Popularity threshold for player moves using master reference data
-    min_highrating_popularity: float = 0.1
     # Allow alternative player moves whose advantage is close to the best move
     advantage_tolerance: float = 0.02
     # Method to aggregate move advantages when combining explorer data
     advantage_aggregation: str = "median"
-    # Minimum popularity (relative) for a move to be considered as baseline for advantage comparison
-    min_advantage_baseline_popularity: float = 0.1
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
-    master_cache_file: str = "master_cache.db"
     stockfish_cache_file: str = "stockfish_cache.db"
     use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
     opponent_fallback_count: int = (
@@ -49,13 +44,7 @@ class Config:
             with open(yaml_path, "r") as f:
                 data = yaml.safe_load(f)
                 if data:
-                    key_map = {
-                        "min_master_popularity": "min_highrating_popularity",
-                    }
                     for key, value in data.items():
-                        mapped_key = key_map.get(key, key)
-                        if mapped_key != key:
-                            key = mapped_key
                         if hasattr(config, key):
                             setattr(config, key, value)
         return config
@@ -69,16 +58,8 @@ class Config:
         if not 0 <= self.min_opponent_popularity <= 1:
             raise ValueError("min_opponent_popularity must be between 0 and 1")
 
-        if not 0 <= self.min_highrating_popularity <= 1:
-            raise ValueError("min_highrating_popularity must be between 0 and 1")
-
         if not 0 <= self.advantage_tolerance <= 1:
             raise ValueError("advantage_tolerance must be between 0 and 1")
-
-        if not 0 <= self.min_advantage_baseline_popularity <= 1:
-            raise ValueError(
-                "min_advantage_baseline_popularity must be between 0 and 1"
-            )
 
         agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
         if agg_method not in {"mean", "median"}:
@@ -162,12 +143,6 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--min-highrating-popularity",
-        type=float,
-        help="Minimum popularity for player moves in master reference games (0-1)",
-    )
-
-    parser.add_argument(
         "--advantage-tolerance",
         type=float,
         help="Allow alternative player moves within this advantage of the best move (0-1)",
@@ -180,32 +155,11 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--min-advantage-baseline-popularity",
-        type=float,
-        help="Minimum popularity (relative, 0-1) for a move to be used as baseline for advantage comparison",
-    )
-
-    # Backward compatibility for legacy flags
-    parser.add_argument(
-        "--min-master-popularity",
-        type=float,
-        dest="min_highrating_popularity",
-        help=argparse.SUPPRESS,
-    )
-
-    parser.add_argument(
         "--output", type=str, dest="output_file", help="Output PGN file path"
     )
 
     parser.add_argument(
         "--cache", type=str, dest="cache_file", help="Cache database file path"
-    )
-
-    parser.add_argument(
-        "--master-cache",
-        type=str,
-        dest="master_cache_file",
-        help="Master games cache database file path",
     )
 
     parser.add_argument(

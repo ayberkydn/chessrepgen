@@ -304,7 +304,6 @@ Configuration:
   Rating brackets: {", ".join(map(str, self.config.ratings))}
   Time controls: {", ".join(self.config.time_control)}
   Min opponent popularity: {self.config.min_opponent_popularity:.1%}
-  Min master popularity: {self.config.min_highrating_popularity:.1%}
 """
 
         return summary
