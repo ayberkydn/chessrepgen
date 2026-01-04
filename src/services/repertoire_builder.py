@@ -590,7 +590,9 @@ class RepertoireBuilder:
             if not has_lichess_moves:
                 reason = "No player move data available"
             else:
-                reason = "No player moves meet advantage tolerance"
+                reason = (
+                    "No player moves meet advantage tolerance and popularity threshold"
+                )
         else:
             has_lichess_moves = bool(lichess_stats and lichess_stats.get("moves"))
             if not has_lichess_moves:

@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock, Mock
+
 import chess
 import pytest
 

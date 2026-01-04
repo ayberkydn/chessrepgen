@@ -15,6 +15,7 @@ class Config:
     time_control: list[str] = field(default_factory=lambda: ["rapid", "blitz"])
     ratings: list[int] = field(default_factory=lambda: [1600, 1800, 2000, 2200, 2500])
     min_opponent_popularity: float = 0.1
+    min_player_popularity: float = 0.01
     # Allow alternative player moves whose advantage is close to the best move
     advantage_tolerance: float = 0.02
     # Method to aggregate move advantages when combining explorer data
@@ -57,6 +58,9 @@ class Config:
     def validate(self) -> None:
         if not 0 <= self.min_opponent_popularity <= 1:
             raise ValueError("min_opponent_popularity must be between 0 and 1")
+
+        if not 0 <= self.min_player_popularity <= 1:
+            raise ValueError("min_player_popularity must be between 0 and 1")
 
         if not 0 <= self.advantage_tolerance <= 1:
             raise ValueError("advantage_tolerance must be between 0 and 1")
@@ -140,6 +144,12 @@ def parse_arguments() -> argparse.Namespace:
         "--min-popularity",
         type=float,
         help="Minimum popularity for opponent moves (0-1)",
+    )
+
+    parser.add_argument(
+        "--min-player-popularity",
+        type=float,
+        help="Minimum popularity for player moves (0-1)",
     )
 
     parser.add_argument(

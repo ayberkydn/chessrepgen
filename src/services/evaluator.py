@@ -17,6 +17,10 @@ class MoveEvaluator:
         """Return the popularity threshold for opponent moves."""
         return self.config.min_opponent_popularity
 
+    def _player_popularity_threshold(self) -> float:
+        """Return the popularity threshold for player moves."""
+        return getattr(self.config, "min_player_popularity", 0.0)
+
     def parse_move_data(self, move_data: dict) -> MoveStats:
         return MoveStats(
             uci=move_data.get("uci", ""),
@@ -48,36 +52,65 @@ class MoveEvaluator:
         )
 
         if is_player_turn and lichess_stats and lichess_stats.get("moves"):
-            # For player moves: filter by advantage tolerance only
+            # For player moves: filter by advantage tolerance and popularity
             candidate_moves: list[MoveStats] = []
+            total_games_at_pos = 0
             for move_data in lichess_stats["moves"]:
                 move_stats = self.parse_move_data(move_data)
                 candidate_moves.append(move_stats)
+                total_games_at_pos += move_stats.total_games
 
             if not candidate_moves:
                 return []
 
-            # Find best advantage among all moves
-            baseline_advantage = max(
-                (m.advantage(self.is_white) for m in candidate_moves), default=None
-            )
+            tolerance = getattr(self.config, "advantage_tolerance", 0.0)
+            pop_threshold = self._player_popularity_threshold()
+
+            # First, filter to moves that meet popularity threshold
+            popular_moves = [
+                m
+                for m in candidate_moves
+                if (m.total_games / total_games_at_pos if total_games_at_pos > 0 else 0)
+                >= pop_threshold
+            ]
+
+            # Calculate baseline advantage from popular moves only
+            # This prevents unpopular outliers from skewing the baseline
+            if popular_moves:
+                baseline_advantage = max(
+                    (m.advantage(self.is_white) for m in popular_moves), default=None
+                )
+            else:
+                # Fallback: if no moves meet popularity threshold, use best move overall
+                baseline_advantage = max(
+                    (m.advantage(self.is_white) for m in candidate_moves), default=None
+                )
 
             if baseline_advantage is None:
                 return []
 
-            # Keep moves within advantage tolerance of best move
-            tolerance = getattr(self.config, "advantage_tolerance", 0.0)
+            # Keep moves within advantage tolerance of best popular move AND meeting popularity threshold
             for move_stats in candidate_moves:
                 advantage_value = move_stats.advantage(self.is_white)
-                if baseline_advantage - advantage_value <= tolerance:
+                popularity = (
+                    move_stats.total_games / total_games_at_pos
+                    if total_games_at_pos > 0
+                    else 0
+                )
+
+                if (baseline_advantage - advantage_value <= tolerance) and (
+                    popularity >= pop_threshold
+                ):
                     moves.append(move_stats)
 
             # Log player move filtering results
             logger.debug(
-                "Player move filtering: %d total moves, %d passed advantage tolerance %.1f%%",
+                "Player move filtering: %d total moves, %d popular, %d passed advantage tolerance %.1f%% and popularity %.1f%%",
                 len(candidate_moves),
+                len(popular_moves),
                 len(moves),
                 tolerance * 100,
+                pop_threshold * 100,
             )
 
             moves.sort(

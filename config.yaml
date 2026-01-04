@@ -16,13 +16,14 @@ ratings:
 output_file: rep.pgn
 
 min_opponent_popularity: 0.01
+min_player_popularity: 0.02
 advantage_tolerance: 0.012
 
 # How to aggregate outcomes when evaluating move advantages (median or mean)
 advantage_aggregation: mean
 
 # Minimum number of Lichess games to continue exploring a position
-min_lichess_games: 10000
+min_lichess_games: 1000
 
 # Cache settings
 cache_file: lichess_cache.db
@@ -39,5 +40,5 @@ stockfish_depth: 20
 stockfish_threads: 8
 
 # Terminal score calculation weights (must sum to 1.0)
-terminal_advantage_weight: 0.5
-stockfish_score_weight: 0.5
+terminal_advantage_weight: 0.8
+stockfish_score_weight: 0.2
