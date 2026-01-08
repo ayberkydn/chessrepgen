@@ -28,7 +28,6 @@ class Config:
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
     )
-    prune_non_best_moves: bool = False  # Prune non-best player moves after evaluation
     use_stockfish: bool = False  # Whether to use Stockfish evaluation
     stockfish_path: str = "stockfish"  # Path to Stockfish executable
     stockfish_depth: int = 15  # Stockfish search depth
@@ -201,21 +200,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Disable HTTP proxies when contacting Lichess",
     )
 
-    parser.add_argument(
-        "--prune-non-best-moves",
-        dest="prune_non_best_moves",
-        action="store_true",
-        help="Prune non-best player moves after terminal advantages are computed",
-    )
-
-    parser.add_argument(
-        "--no-prune-non-best-moves",
-        dest="prune_non_best_moves",
-        action="store_false",
-        help="Keep all player moves even if they are suboptimal",
-    )
-
-    parser.set_defaults(use_proxy=None, prune_non_best_moves=None)
+    parser.set_defaults(use_proxy=None)
 
     return parser.parse_args()
 
@@ -238,6 +223,7 @@ class PostprocessConfig:
     initial_lines: list[str] = field(default_factory=list)
     max_depth: int | None = None
     min_games: int = 0
+    prune_non_best_moves: bool = False  # Keep only best repertoire moves
     # Granular comment removal options
     remove_advantage: bool = False  # Remove A: field
     remove_terminal_advantage: bool = False  # Remove T: field
@@ -347,6 +333,20 @@ def parse_postprocess_arguments() -> argparse.Namespace:
         help="Minimum total games required to keep a position",
     )
 
+    parser.add_argument(
+        "--prune-non-best-moves",
+        dest="prune_non_best_moves",
+        action="store_true",
+        help="Keep only the best repertoire reply (based on T:) at each player node",
+    )
+
+    parser.add_argument(
+        "--no-prune-non-best-moves",
+        dest="prune_non_best_moves",
+        action="store_false",
+        help="Disable pruning of non-best repertoire replies",
+    )
+
     # Backward compatibility for legacy postprocess flags
     parser.add_argument(
         "--postprune-max-depth",
@@ -448,6 +448,8 @@ def parse_postprocess_arguments() -> argparse.Namespace:
         default="INFO",
         help="Set logging level (default: INFO)",
     )
+
+    parser.set_defaults(prune_non_best_moves=None)
 
     return parser.parse_args()
 

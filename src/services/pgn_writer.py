@@ -11,7 +11,7 @@ import chess.pgn
 logger = logging.getLogger(__name__)
 
 
-def extract_and_format_stats_comment(edge, is_white: bool) -> str:
+def extract_and_format_stats_comment(edge, is_white: bool, config=None) -> str:
     """Extract win/draw/black statistics and format them for PGN comments.
 
     Returns minified comment like: A:5.0,T:10.0,P:25.0%,G:1500,Alts:Nf3 4.5,d4 3.2
@@ -19,7 +19,33 @@ def extract_and_format_stats_comment(edge, is_white: bool) -> str:
     parts = []
 
     if edge.stats:
-        advantage = edge.stats.advantage(is_white)
+        # Calculate parent advantage for shrinkage
+        parent_advantage = None
+        if edge.parent and edge.parent.position_stats:
+            parent_lichess = edge.parent.position_stats.get("lichess")
+            if parent_lichess:
+                parent_white = parent_lichess.get("white", 0)
+                parent_draws = parent_lichess.get("draws", 0)
+                parent_black = parent_lichess.get("black", 0)
+                parent_total = parent_white + parent_draws + parent_black
+                if parent_total > 0:
+                    parent_white_rate = parent_white / parent_total
+                    parent_black_rate = parent_black / parent_total
+                    parent_advantage = (
+                        parent_white_rate - parent_black_rate
+                        if is_white
+                        else parent_black_rate - parent_white_rate
+                    )
+
+        min_games = getattr(config, "min_lichess_games", 1000) if config else 1000
+        padding = getattr(config, "padding_strength", 0) if config else 0
+
+        advantage = edge.stats.advantage(
+            is_white,
+            min_games_threshold=min_games,
+            padding_strength=padding,
+            parent_advantage=parent_advantage,
+        )
         parts.append(f"A:{advantage * 100:.1f}")
 
     # Get terminal advantage from child or from edge (for pruned nodes)
@@ -137,7 +163,9 @@ class PGNWriter:
                     new_node = game_node.add_variation(edge.move)
 
                 # Always include formatted statistics as comments
-                stats_comment = extract_and_format_stats_comment(edge, self.is_white)
+                stats_comment = extract_and_format_stats_comment(
+                    edge, self.is_white, self.config
+                )
                 if stats_comment:
                     new_node.comment = stats_comment
 

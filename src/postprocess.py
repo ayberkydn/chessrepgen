@@ -58,10 +58,13 @@ def main():
             logger.info(
                 "Adding opponent move indicators based on terminal advantage deltas"
             )
+        if config.prune_non_best_moves:
+            logger.info("Pruning non-best repertoire moves before export")
 
         processor = PGNPostprocessor(
             max_depth=config.max_depth,
             min_games=config.min_games,
+            prune_non_best_moves=config.prune_non_best_moves,
             remove_advantage=config.remove_advantage,
             remove_terminal_advantage=config.remove_terminal_advantage,
             remove_popularity=config.remove_popularity,

@@ -20,7 +20,8 @@ def test_validate_rejects_unknown_time_control():
 
 def test_postprocess_config_splits_comma_delimited_initial_moves():
     config = PostprocessConfig(
-        initial_lines="e4 e6, d4 d5", input_file="in.pgn", output_file="out.pgn"
+        initial_lines="e4 e6, d4 d5",
+        input_file="in.pgn",
     )
 
     config.validate()

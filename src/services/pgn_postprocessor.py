@@ -42,6 +42,7 @@ class PGNPostprocessor:
         self,
         max_depth: int | None = None,
         min_games: int = 0,
+        prune_non_best_moves: bool = False,
         remove_advantage: bool = False,
         remove_terminal_advantage: bool = False,
         remove_popularity: bool = False,
@@ -57,6 +58,7 @@ class PGNPostprocessor:
     ):
         self.max_depth = max_depth
         self.min_games = min_games
+        self.prune_non_best_moves = prune_non_best_moves
         self.remove_advantage = remove_advantage
         self.remove_terminal_advantage = remove_terminal_advantage
         self.remove_popularity = remove_popularity
@@ -122,11 +124,13 @@ class PGNPostprocessor:
             base_output = Path(output_path)
             suffix = base_output.suffix or ".pgn"
             parent = base_output.parent
+            output_stem = base_output.stem or input_stem
         else:
             # Auto-generate: use input file's directory
             base_output = input_file.parent / f"{input_stem}.pgn"
             parent = input_file.parent
             suffix = ".pgn"
+            output_stem = input_stem
 
         for index, (initial_moves_label, game_group) in enumerate(selected_groups):
             for game in game_group:
@@ -138,7 +142,7 @@ class PGNPostprocessor:
                 initial_moves_slug = _slugify_initial_moves(
                     initial_moves_label, f"line-{index + 1}"
                 )
-                output_file = parent / f"{input_stem}__{initial_moves_slug}{suffix}"
+                output_file = parent / f"{output_stem}-{initial_moves_slug}{suffix}"
             else:
                 output_file = base_output
 
@@ -216,6 +220,9 @@ class PGNPostprocessor:
         if self.max_depth is not None or self.min_games > 0:
             self._post_prune_node(game, initial_ply, is_white)
 
+        if self.prune_non_best_moves:
+            self._prune_player_best_moves(game, is_white)
+
         # Ensure lines end with the repertoire player's move
         self._prune_incomplete_player_responses(game, is_white)
 
@@ -285,6 +292,55 @@ class PGNPostprocessor:
                 # Recurse into children
                 self._post_prune_node(variation, initial_ply, is_white)
 
+    def _prune_player_best_moves(
+        self, node: chess.pgn.GameNode, is_white: bool
+    ) -> None:
+        """Remove non-best repertoire moves based on terminal advantage."""
+        self._prune_player_best_moves_recursive(node, is_white)
+
+    def _prune_player_best_moves_recursive(
+        self, node: chess.pgn.GameNode, is_white: bool
+    ) -> None:
+        if not node.variations:
+            return
+
+        # Recurse first so children are pruned before evaluating current node.
+        for variation in list(node.variations):
+            self._prune_player_best_moves_recursive(variation, is_white)
+
+        board = node.board()
+        if board.turn != is_white:
+            return
+
+        best_variation: chess.pgn.GameNode | None = None
+        best_advantage: float | None = None
+
+        for variation in node.variations:
+            advantage = _parse_terminal_advantage(variation.comment)
+            if advantage is None:
+                continue
+            if best_advantage is None or advantage > best_advantage:
+                best_advantage = advantage
+                best_variation = variation
+
+        if best_variation is None:
+            return
+
+        alternatives: list[tuple[str, float]] = []
+        for variation in list(node.variations):
+            if variation is best_variation:
+                continue
+            node.variations.remove(variation)
+            alt_advantage = _parse_terminal_advantage(variation.comment)
+            if alt_advantage is None:
+                continue
+            san = _get_san_for_variation(board, variation)
+            alternatives.append((san, alt_advantage))
+
+        if alternatives:
+            alternatives.sort(key=lambda item: item[1], reverse=True)
+            self._attach_alternatives_to_comment(best_variation, alternatives)
+
     def _prune_incomplete_player_responses(
         self, node: chess.pgn.GameNode, is_white: bool
     ) -> None:
@@ -305,6 +361,26 @@ class PGNPostprocessor:
             node.comment = self._filter_comment_fields(node.comment)
         for variation in node.variations:
             self._filter_comments(variation)
+
+    def _attach_alternatives_to_comment(
+        self, node: chess.pgn.GameNode, alternatives: list[tuple[str, float]]
+    ) -> None:
+        """Attach Alts: field with up to three alternatives to the node comment."""
+        alt_parts = [
+            f"{san} {score * 100:.1f}"
+            for san, score in alternatives[:3]
+            if san and score is not None
+        ]
+        if not alt_parts:
+            return
+
+        base_comment = _remove_alternatives_field(node.comment or "")
+        base_comment = base_comment.strip(",")
+        alts_comment = f"Alts:{','.join(alt_parts)}"
+        if base_comment:
+            node.comment = f"{base_comment},{alts_comment}"
+        else:
+            node.comment = alts_comment
 
     def _filter_comment_fields(self, comment: str) -> str:
         """Remove specific fields from a comment string.
@@ -466,6 +542,53 @@ def _parse_terminal_advantage(comment: str | None) -> float | None:
         return float(match.group(1)) / 100.0
     except ValueError:
         return None
+
+
+def _remove_alternatives_field(comment: str) -> str:
+    """Return comment without any Alts: field."""
+    fields = _split_comment_fields(comment)
+    filtered = [field for field in fields if not field.startswith("Alts:")]
+    return ",".join(filtered)
+
+
+def _split_comment_fields(comment: str) -> list[str]:
+    """Split a comment string into discrete Field:Value segments."""
+    if not comment:
+        return []
+
+    fields: list[str] = []
+    start = 0
+    i = 0
+    length = len(comment)
+
+    while i < length:
+        if comment[i] == ",":
+            j = i + 1
+            while j < length and comment[j].isspace():
+                j += 1
+            name_start = j
+            while j < length and comment[j].isalpha():
+                j += 1
+            if j > name_start and j < length and comment[j] == ":":
+                fields.append(comment[start:i])
+                start = i + 1
+        i += 1
+
+    fields.append(comment[start:])
+    return [field.strip() for field in fields if field.strip()]
+
+
+def _get_san_for_variation(
+    board: chess.Board, variation: chess.pgn.GameNode
+) -> str:
+    """Return SAN for a variation node, falling back to UCI if needed."""
+    move = variation.move
+    if move is None:
+        return ""
+    try:
+        return board.san(move)
+    except Exception:
+        return move.uci()
 
 
 def _normalize_initial_moves(moves: str) -> str:

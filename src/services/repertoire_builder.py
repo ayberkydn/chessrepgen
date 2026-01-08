@@ -364,10 +364,32 @@ class RepertoireBuilder:
 
         # Log candidate moves being considered
         if candidate_moves:
+            # Calculate parent advantage for shrinkage
+            parent_advantage = None
+            if lichess_stats:
+                parent_white = lichess_stats.get("white", 0)
+                parent_draws = lichess_stats.get("draws", 0)
+                parent_black = lichess_stats.get("black", 0)
+                parent_total = parent_white + parent_draws + parent_black
+                if parent_total > 0:
+                    parent_white_rate = parent_white / parent_total
+                    parent_black_rate = parent_black / parent_total
+                    parent_advantage = (
+                        parent_white_rate - parent_black_rate
+                        if self.is_white
+                        else parent_black_rate - parent_white_rate
+                    )
+
+            min_games = getattr(self.config, "min_lichess_games", 1000)
+            padding = getattr(self.config, "padding_strength", 0)
+
             moves_info = []
             for move in candidate_moves[:5]:  # Show top 5 moves
                 side_label = "White" if self.is_white else "Black"
-                advantage = move.advantage(self.is_white) * 100
+                advantage = (
+                    move.advantage(self.is_white, parent_advantage, min_games, padding)
+                    * 100
+                )
                 moves_info.append(
                     f"{move.san} ({advantage:+.1f}%, {move.total_games} games)"
                 )
@@ -474,7 +496,31 @@ class RepertoireBuilder:
                     edge_reason = child_node.termination_reason
 
             side_label = "White" if self.is_white else "Black"
-            advantage = move_stats.advantage(self.is_white) * 100
+            
+            # Calculate parent advantage for shrinkage
+            parent_advantage = None
+            parent_lichess = position_stats.get("lichess") if position_stats else None
+            if parent_lichess:
+                parent_white = parent_lichess.get("white", 0)
+                parent_draws = parent_lichess.get("draws", 0)
+                parent_black = parent_lichess.get("black", 0)
+                parent_total = parent_white + parent_draws + parent_black
+                if parent_total > 0:
+                    parent_white_rate = parent_white / parent_total
+                    parent_black_rate = parent_black / parent_total
+                    parent_advantage = (
+                        parent_white_rate - parent_black_rate
+                        if self.is_white
+                        else parent_black_rate - parent_white_rate
+                    )
+
+            min_games = getattr(self.config, "min_lichess_games", 1000)
+            padding = getattr(self.config, "padding_strength", 0)
+
+            advantage = (
+                move_stats.advantage(self.is_white, parent_advantage, min_games, padding)
+                * 100
+            )
             comment_parts = [
                 f"{side_label} advantage: {advantage:.1f}",
                 f"Samples: {move_stats.total_games}",

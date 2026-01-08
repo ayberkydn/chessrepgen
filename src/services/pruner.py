@@ -50,6 +50,11 @@ class RepertoirePruner:
         child_values: list[tuple[float, float]] = []
         total_weight = 0.0
 
+        # Calculate parent position advantage for shrinkage
+        parent_advantage = self._calculate_position_advantage(node)
+        min_games = getattr(self.config, "min_lichess_games", 1000)
+        padding = getattr(self.config, "padding_strength", 0)
+
         for edge in node.edges:
             advantage_value: float | None = None
             child_node = edge.child
@@ -70,7 +75,9 @@ class RepertoirePruner:
                     cache[child_node.key] = advantage_value
                 # Fallback to move's own advantage if position calculation fails
                 if advantage_value is None and edge.stats:
-                    advantage_value = edge.stats.advantage(self.is_white)
+                    advantage_value = edge.stats.advantage(
+                        self.is_white, parent_advantage, min_games, padding
+                    )
                     if child_node:
                         child_node.terminal_advantage = advantage_value
                         cache[child_node.key] = advantage_value
@@ -80,10 +87,14 @@ class RepertoirePruner:
                         child_node, cache
                     )
                 if advantage_value is None and edge.stats:
-                    advantage_value = edge.stats.advantage(self.is_white)
+                    advantage_value = edge.stats.advantage(
+                        self.is_white, parent_advantage, min_games, padding
+                    )
 
             if advantage_value is None and edge.stats:
-                advantage_value = edge.stats.advantage(self.is_white)
+                advantage_value = edge.stats.advantage(
+                    self.is_white, parent_advantage, min_games, padding
+                )
                 if child_node and child_node.terminal_advantage is None:
                     child_node.terminal_advantage = advantage_value
                     cache[child_node.key] = advantage_value

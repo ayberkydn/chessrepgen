@@ -173,6 +173,94 @@ def test_process_raises_when_initial_moves_not_found(tmp_path):
         processor.process(str(input_file), str(tmp_path / "processed.pgn"))
 
 
+def test_prune_non_best_moves_keeps_best_player_line(tmp_path):
+    input_file = tmp_path / "repertoire.pgn"
+    input_file.write_text(
+        textwrap.dedent(
+            """
+            [Event "Test"]
+            [White "Repertoire"]
+            [Black "Opponent"]
+            [Result "*"]
+            [RepertoireSide "white"]
+
+            1. e4 {T:20.0} ( 1. Nf3 {T:15.0} ) ( 1. d4 {T:5.0} ) 1... c5 *
+            """
+        ).strip()
+        + "\n"
+    )
+
+    processor = PGNPostprocessor(prune_non_best_moves=True)
+    outputs = processor.process(str(input_file), str(tmp_path / "processed.pgn"))
+
+    assert len(outputs) == 1
+    with Path(outputs[0]).open() as f:
+        game = chess.pgn.read_game(f)
+
+    assert len(game.variations) == 1
+    first_move = game.variations[0]
+    assert "Alts:Nf3 15.0,d4 5.0" in first_move.comment
+    data = Path(outputs[0]).read_text()
+    assert "( 1. Nf3" not in data
+    assert "( 1. d4" not in data
+
+
+def test_prune_non_best_moves_skips_opponent_responses(tmp_path):
+    input_file = tmp_path / "repertoire.pgn"
+    input_file.write_text(
+        textwrap.dedent(
+            """
+            [Event "Test"]
+            [White "Repertoire"]
+            [Black "Opponent"]
+            [Result "*"]
+            [RepertoireSide "white"]
+
+            1. e4 {T:20.0} 1... c5 {T:5.0} ( 1... e5 {T:15.0} 2. Nc3 {T:18.0} ) 2. Nf3 {T:22.0} *
+            """
+        ).strip()
+        + "\n"
+    )
+
+    processor = PGNPostprocessor(prune_non_best_moves=True)
+    outputs = processor.process(str(input_file), str(tmp_path / "processed.pgn"))
+
+    assert len(outputs) == 1
+    with Path(outputs[0]).open() as f:
+        game = chess.pgn.read_game(f)
+
+    first_move = game.variations[0]
+    assert len(first_move.variations) == 2
+
+
+def test_prune_non_best_moves_handles_black_repertoire(tmp_path):
+    input_file = tmp_path / "repertoire.pgn"
+    input_file.write_text(
+        textwrap.dedent(
+            """
+            [Event "Test"]
+            [White "Opponent"]
+            [Black "Repertoire"]
+            [Result "*"]
+            [RepertoireSide "black"]
+
+            1. e4 e5 {T:10.0} ( 1... c5 {T:5.0} ) *
+            """
+        ).strip()
+        + "\n"
+    )
+
+    processor = PGNPostprocessor(prune_non_best_moves=True)
+    outputs = processor.process(str(input_file), str(tmp_path / "processed.pgn"))
+
+    assert len(outputs) == 1
+    with Path(outputs[0]).open() as f:
+        game = chess.pgn.read_game(f)
+
+    opponent_move = game.variations[0]
+    assert len(opponent_move.variations) == 1
+    best_reply = opponent_move.variations[0]
+    assert "Alts:c5 5.0" in best_reply.comment
 def test_postprocess_lines_end_with_player_move_white(tmp_path):
     input_file = tmp_path / "repertoire.pgn"
     input_file.write_text(

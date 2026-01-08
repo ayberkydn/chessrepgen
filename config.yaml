@@ -1,6 +1,9 @@
 initial_moves_white:
   - e4
   # - Nf3
+  # - d4
+  # - c4
+  # - b4
 initial_moves_black:
   # - ""
 
@@ -15,9 +18,9 @@ ratings:
 
 output_file: rep.pgn
 
-min_opponent_popularity: 0.01
-min_player_popularity: 0.02
-advantage_tolerance: 0.012
+min_opponent_popularity: 0.001
+min_player_popularity: 0.001
+advantage_tolerance: 0.01
 
 # How to aggregate outcomes when evaluating move advantages (median or mean)
 advantage_aggregation: mean
@@ -25,16 +28,17 @@ advantage_aggregation: mean
 # Minimum number of Lichess games to continue exploring a position
 min_lichess_games: 1000
 
+# Strength of shrinkage towards parent position for low-sample moves (higher = more conservative)
+padding_strength: 100
+
 # Cache settings
 cache_file: lichess_cache.db
 stockfish_cache_file: stockfish_cache.db
 
-prune_non_best_moves: true
-
 use_proxy: false
 
 # Stockfish evaluation settings
-use_stockfish: true
+use_stockfish: false
 stockfish_path: stockfish
 stockfish_depth: 20
 stockfish_threads: 8
