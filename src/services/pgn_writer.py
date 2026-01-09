@@ -19,24 +19,6 @@ def extract_and_format_stats_comment(edge, is_white: bool, config=None) -> str:
     parts = []
 
     if edge.stats:
-        # Calculate parent advantage for shrinkage
-        parent_advantage = None
-        if edge.parent and edge.parent.position_stats:
-            parent_lichess = edge.parent.position_stats.get("lichess")
-            if parent_lichess:
-                parent_white = parent_lichess.get("white", 0)
-                parent_draws = parent_lichess.get("draws", 0)
-                parent_black = parent_lichess.get("black", 0)
-                parent_total = parent_white + parent_draws + parent_black
-                if parent_total > 0:
-                    parent_white_rate = parent_white / parent_total
-                    parent_black_rate = parent_black / parent_total
-                    parent_advantage = (
-                        parent_white_rate - parent_black_rate
-                        if is_white
-                        else parent_black_rate - parent_white_rate
-                    )
-
         min_games = getattr(config, "min_lichess_games", 1000) if config else 1000
         padding = getattr(config, "padding_strength", 0) if config else 0
 
@@ -44,7 +26,6 @@ def extract_and_format_stats_comment(edge, is_white: bool, config=None) -> str:
             is_white,
             min_games_threshold=min_games,
             padding_strength=padding,
-            parent_advantage=parent_advantage,
         )
         parts.append(f"A:{advantage * 100:.1f}")
 

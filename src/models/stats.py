@@ -36,12 +36,11 @@ class MoveStats:
         for_white: bool,
         min_games_threshold: int | None = None,
         padding_strength: int | None = None,
-        parent_advantage: float | None = None,
     ) -> float:
         """Difference between the player's and opponent's win percentages.
 
-        If thresholds are provided, applies shrinkage towards the parent
-        advantage (or 0 when unavailable) for moves with low game counts.
+        If thresholds are provided, applies shrinkage towards balanced results
+        for moves with low game counts.
         """
         player_win_rate = self.win_rate(for_white)
         opponent_win_rate = self.win_rate(not for_white)
@@ -53,8 +52,7 @@ class MoveStats:
             and padding_strength is not None
             and self.total_games < min_games_threshold
         ):
-            target = parent_advantage if parent_advantage is not None else 0.0
             weight = self.total_games / (self.total_games + padding_strength)
-            return target + weight * (raw_advantage - target)
+            return weight * raw_advantage
 
         return raw_advantage

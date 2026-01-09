@@ -24,24 +24,7 @@ class RepertoireBuilder:
         self.side = side
         self.is_white = side == "white"
 
-        proxies = None
-        if getattr(config, "use_proxy", True):
-            proxies = [
-                "http://opsmwgon:c9splz41ut21@142.111.48.253:7030",
-                "http://opsmwgon:c9splz41ut21@31.59.20.176:6754",
-                "http://opsmwgon:c9splz41ut21@23.95.150.145:6114",
-                "http://opsmwgon:c9splz41ut21@198.23.239.134:6540",
-                "http://opsmwgon:c9splz41ut21@45.38.107.97:6014",
-                "http://opsmwgon:c9splz41ut21@107.172.163.27:6543",
-                "http://opsmwgon:c9splz41ut21@198.105.121.200:6462",
-                "http://opsmwgon:c9splz41ut21@64.137.96.74:6641",
-                "http://opsmwgon:c9splz41ut21@216.10.27.159:6837",
-                "http://opsmwgon:c9splz41ut21@142.111.67.146:5611",
-            ]
-        else:
-            logger.info("Proxy usage disabled via configuration.")
-
-        self.client = LichessClient(proxies=proxies)
+        self.client = LichessClient()
         self.cache = ChessCache(config.cache_file)
         self.evaluator = MoveEvaluator(config, side)
         self.pruner = RepertoirePruner(config, self.is_white)
@@ -364,22 +347,6 @@ class RepertoireBuilder:
 
         # Log candidate moves being considered
         if candidate_moves:
-            # Calculate parent advantage for shrinkage
-            parent_advantage = None
-            if lichess_stats:
-                parent_white = lichess_stats.get("white", 0)
-                parent_draws = lichess_stats.get("draws", 0)
-                parent_black = lichess_stats.get("black", 0)
-                parent_total = parent_white + parent_draws + parent_black
-                if parent_total > 0:
-                    parent_white_rate = parent_white / parent_total
-                    parent_black_rate = parent_black / parent_total
-                    parent_advantage = (
-                        parent_white_rate - parent_black_rate
-                        if self.is_white
-                        else parent_black_rate - parent_white_rate
-                    )
-
             min_games = getattr(self.config, "min_lichess_games", 1000)
             padding = getattr(self.config, "padding_strength", 0)
 
@@ -387,7 +354,11 @@ class RepertoireBuilder:
             for move in candidate_moves[:5]:  # Show top 5 moves
                 side_label = "White" if self.is_white else "Black"
                 advantage = (
-                    move.advantage(self.is_white, parent_advantage, min_games, padding)
+                    move.advantage(
+                        self.is_white,
+                        min_games_threshold=min_games,
+                        padding_strength=padding,
+                    )
                     * 100
                 )
                 moves_info.append(
@@ -496,29 +467,16 @@ class RepertoireBuilder:
                     edge_reason = child_node.termination_reason
 
             side_label = "White" if self.is_white else "Black"
-            
-            # Calculate parent advantage for shrinkage
-            parent_advantage = None
-            parent_lichess = position_stats.get("lichess") if position_stats else None
-            if parent_lichess:
-                parent_white = parent_lichess.get("white", 0)
-                parent_draws = parent_lichess.get("draws", 0)
-                parent_black = parent_lichess.get("black", 0)
-                parent_total = parent_white + parent_draws + parent_black
-                if parent_total > 0:
-                    parent_white_rate = parent_white / parent_total
-                    parent_black_rate = parent_black / parent_total
-                    parent_advantage = (
-                        parent_white_rate - parent_black_rate
-                        if self.is_white
-                        else parent_black_rate - parent_white_rate
-                    )
 
             min_games = getattr(self.config, "min_lichess_games", 1000)
             padding = getattr(self.config, "padding_strength", 0)
 
             advantage = (
-                move_stats.advantage(self.is_white, parent_advantage, min_games, padding)
+                move_stats.advantage(
+                    self.is_white,
+                    min_games_threshold=min_games,
+                    padding_strength=padding,
+                )
                 * 100
             )
             comment_parts = [

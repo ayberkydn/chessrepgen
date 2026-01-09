@@ -14,17 +14,16 @@ class Config:
     initial_moves_black: list[str] = field(default_factory=lambda: ["e4 d5"])
     time_control: list[str] = field(default_factory=lambda: ["rapid", "blitz"])
     ratings: list[int] = field(default_factory=lambda: [1600, 1800, 2000, 2200, 2500])
-    min_opponent_popularity: float = 0.1
-    min_player_popularity: float = 0.01
+    min_opponent_popularity: float = 0.01
+    min_player_popularity: float = 0.001
     # Allow alternative player moves whose advantage is close to the best move
     advantage_tolerance: float = 0.02
     # Method to aggregate move advantages when combining explorer data
-    advantage_aggregation: str = "median"
+    advantage_aggregation: str = "mean"
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
     stockfish_cache_file: str = "stockfish_cache.db"
-    use_proxy: bool = True  # Enable/disable HTTP proxies for Lichess API calls
     opponent_fallback_count: int = (
         1  # Minimum opponent continuations when popularity threshold fails
     )
@@ -185,22 +184,6 @@ def parse_arguments() -> argparse.Namespace:
         default="INFO",
         help="Set logging level (default: INFO)",
     )
-
-    parser.add_argument(
-        "--use-proxy",
-        dest="use_proxy",
-        action="store_true",
-        help="Enable HTTP proxies when contacting Lichess (default: True)",
-    )
-
-    parser.add_argument(
-        "--no-use-proxy",
-        dest="use_proxy",
-        action="store_false",
-        help="Disable HTTP proxies when contacting Lichess",
-    )
-
-    parser.set_defaults(use_proxy=None)
 
     return parser.parse_args()
 

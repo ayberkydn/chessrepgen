@@ -63,22 +63,6 @@ class MoveEvaluator:
             if not candidate_moves:
                 return []
 
-            # Calculate parent position advantage for shrinkage
-            parent_advantage = None
-            if lichess_stats:
-                parent_white = lichess_stats.get("white", 0)
-                parent_draws = lichess_stats.get("draws", 0)
-                parent_black = lichess_stats.get("black", 0)
-                parent_total = parent_white + parent_draws + parent_black
-                if parent_total > 0:
-                    parent_white_rate = parent_white / parent_total
-                    parent_black_rate = parent_black / parent_total
-                    parent_advantage = (
-                        parent_white_rate - parent_black_rate
-                        if self.is_white
-                        else parent_black_rate - parent_white_rate
-                    )
-
             min_games = getattr(self.config, "min_lichess_games", 1000)
             padding = getattr(self.config, "padding_strength", 0)
 
@@ -98,7 +82,11 @@ class MoveEvaluator:
             if popular_moves:
                 baseline_advantage = max(
                     (
-                        m.advantage(self.is_white, parent_advantage, min_games, padding)
+                        m.advantage(
+                            self.is_white,
+                            min_games_threshold=min_games,
+                            padding_strength=padding,
+                        )
                         for m in popular_moves
                     ),
                     default=None,
@@ -107,7 +95,11 @@ class MoveEvaluator:
                 # Fallback: if no moves meet popularity threshold, use best move overall
                 baseline_advantage = max(
                     (
-                        m.advantage(self.is_white, parent_advantage, min_games, padding)
+                        m.advantage(
+                            self.is_white,
+                            min_games_threshold=min_games,
+                            padding_strength=padding,
+                        )
                         for m in candidate_moves
                     ),
                     default=None,
@@ -119,7 +111,9 @@ class MoveEvaluator:
             # Keep moves within advantage tolerance of best popular move AND meeting popularity threshold
             for move_stats in candidate_moves:
                 advantage_value = move_stats.advantage(
-                    self.is_white, parent_advantage, min_games, padding
+                    self.is_white,
+                    min_games_threshold=min_games,
+                    padding_strength=padding,
                 )
                 popularity = (
                     move_stats.total_games / total_games_at_pos
@@ -144,7 +138,11 @@ class MoveEvaluator:
 
             moves.sort(
                 key=lambda m: (
-                    m.advantage(self.is_white, parent_advantage, min_games, padding),
+                    m.advantage(
+                        self.is_white,
+                        min_games_threshold=min_games,
+                        padding_strength=padding,
+                    ),
                     m.total_games,
                 ),
                 reverse=True,

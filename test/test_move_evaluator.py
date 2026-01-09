@@ -101,3 +101,40 @@ def test_opponent_fallback_returns_top_moves_when_threshold_unmet():
     )
 
     assert [m.total_games for m in moves] == [50, 30]
+
+
+def test_player_padding_influences_move_selection():
+    config = Config()
+    config.advantage_tolerance = 0.01
+    config.min_player_popularity = 0.0
+    config.min_lichess_games = 50
+    config.padding_strength = 100
+    evaluator = MoveEvaluator(config, side="white")
+
+    lichess_stats = {
+        "white": 50,
+        "draws": 0,
+        "black": 50,
+        "moves": [
+            {
+                "uci": "a2a3",
+                "san": "a3",
+                "white": 6,
+                "draws": 0,
+                "black": 4,
+            },  # raw advantage: 0.2, shrinks heavily
+            {
+                "uci": "e2e4",
+                "san": "e4",
+                "white": 59,
+                "draws": 0,
+                "black": 41,
+            },  # advantage: 0.18, unaffected by padding
+        ],
+    }
+
+    moves = evaluator.evaluate_position(
+        lichess_stats, None, is_player_turn=True, depth=0
+    )
+
+    assert [m.uci for m in moves] == ["e2e4"]
