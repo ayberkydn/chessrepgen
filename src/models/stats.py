@@ -34,24 +34,19 @@ class MoveStats:
     def advantage(
         self,
         for_white: bool,
-        min_games_threshold: int | None = None,
         padding_strength: int | None = None,
     ) -> float:
         """Difference between the player's and opponent's win percentages.
 
-        If thresholds are provided, applies shrinkage towards balanced results
-        for moves with low game counts.
+        If padding_strength is provided, applies shrinkage towards balanced results
+        based on game count relative to padding.
         """
         player_win_rate = self.win_rate(for_white)
         opponent_win_rate = self.win_rate(not for_white)
         raw_advantage = player_win_rate - opponent_win_rate
 
-        # Apply shrinkage if all conditions are met
-        if (
-            min_games_threshold is not None
-            and padding_strength is not None
-            and self.total_games < min_games_threshold
-        ):
+        # Apply shrinkage if padding is provided
+        if padding_strength is not None and padding_strength > 0:
             weight = self.total_games / (self.total_games + padding_strength)
             return weight * raw_advantage
 

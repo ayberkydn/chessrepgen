@@ -32,7 +32,7 @@ def test_write_repertoire_creates_one_file_per_initial_moves(tmp_path):
 
     assert len(paths) == 2
     names = {Path(p).name for p in paths}
-    assert names == {"repertoire_white-e4.pgn", "repertoire_white-d4.pgn"}
+    assert names == {"white_e4.pgn", "white_d4.pgn"}
 
     for path, initial in zip(paths, initial_sequences):
         data = Path(path).read_text()
@@ -88,13 +88,16 @@ def test_comment_formatting():
     # Test formatting for White side
     comment = extract_and_format_stats_comment(edge, is_white=True)
 
-    # Expected minified format: A:40.0,T:50.0,P:50.0%,G:50
-    assert "A:40.0" in comment
+    # Parent has 100 games, padding_ratio=0.02, so padding=2
+    # Move stats: 50 games, advantage = (30/50 - 10/50) = 0.4
+    # With padding: weight = 50/(50+2) = 0.9615, padded_advantage = 0.9615 * 0.4 = 0.3846
+    # Expected minified format: A:38.5,T:50.0,P:50.0%,G:50
+    assert "A:38.5" in comment
     assert "T:50.0" in comment
     assert "P:50.0%" in comment
     assert "G:50" in comment
 
     # Test formatting for Black side
-    # Advantage for black: 0.2 - 0.6 = -0.4
+    # Advantage for black: 0.2 - 0.6 = -0.4, with padding: -0.3846
     comment_black = extract_and_format_stats_comment(edge, is_white=False)
-    assert "A:-40.0" in comment_black
+    assert "A:-38.5" in comment_black

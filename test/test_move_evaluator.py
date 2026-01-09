@@ -105,12 +105,12 @@ def test_opponent_fallback_returns_top_moves_when_threshold_unmet():
 
 def test_player_padding_influences_move_selection():
     config = Config()
-    config.advantage_tolerance = 0.01
+    config.advantage_tolerance = 0.005  # Tighter tolerance to exclude a3
     config.min_player_popularity = 0.0
-    config.min_lichess_games = 50
-    config.padding_strength = 100
+    config.padding_ratio = 0.02
     evaluator = MoveEvaluator(config, side="white")
 
+    # Parent position has 100 games, so padding = 100 * 0.02 = 2
     lichess_stats = {
         "white": 50,
         "draws": 0,
@@ -122,14 +122,14 @@ def test_player_padding_influences_move_selection():
                 "white": 6,
                 "draws": 0,
                 "black": 4,
-            },  # raw advantage: 0.2, shrinks heavily
+            },  # 10 games, raw advantage: 0.2, weight = 10/(10+2) = 0.833, padded = 0.167
             {
                 "uci": "e2e4",
                 "san": "e4",
                 "white": 59,
                 "draws": 0,
                 "black": 41,
-            },  # advantage: 0.18, unaffected by padding
+            },  # 100 games, raw advantage: 0.18, weight = 100/(100+2) = 0.98, padded = 0.176
         ],
     }
 
@@ -137,4 +137,7 @@ def test_player_padding_influences_move_selection():
         lichess_stats, None, is_player_turn=True, depth=0
     )
 
+    # e4 has higher padded advantage (0.176 > 0.167), so it comes first
+    # a3 is excluded because its padded advantage (0.167) is ~0.0098 below e4's (0.176),
+    # which exceeds the 0.005 tolerance
     assert [m.uci for m in moves] == ["e2e4"]

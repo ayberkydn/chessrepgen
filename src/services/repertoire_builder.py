@@ -347,8 +347,9 @@ class RepertoireBuilder:
 
         # Log candidate moves being considered
         if candidate_moves:
-            min_games = getattr(self.config, "min_lichess_games", 1000)
-            padding = getattr(self.config, "padding_strength", 0)
+            padding_ratio = getattr(self.config, "padding_ratio", 0.02)
+            parent_games = total_games(lichess_stats)
+            padding = int(parent_games * padding_ratio)
 
             moves_info = []
             for move in candidate_moves[:5]:  # Show top 5 moves
@@ -356,7 +357,6 @@ class RepertoireBuilder:
                 advantage = (
                     move.advantage(
                         self.is_white,
-                        min_games_threshold=min_games,
                         padding_strength=padding,
                     )
                     * 100
@@ -468,13 +468,13 @@ class RepertoireBuilder:
 
             side_label = "White" if self.is_white else "Black"
 
-            min_games = getattr(self.config, "min_lichess_games", 1000)
-            padding = getattr(self.config, "padding_strength", 0)
+            padding_ratio = getattr(self.config, "padding_ratio", 0.02)
+            parent_games = total_games(node.position_stats.get("lichess") if node.position_stats else None)
+            padding = int(parent_games * padding_ratio)
 
             advantage = (
                 move_stats.advantage(
                     self.is_white,
-                    min_games_threshold=min_games,
                     padding_strength=padding,
                 )
                 * 100

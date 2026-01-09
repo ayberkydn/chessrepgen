@@ -8,6 +8,8 @@ from pathlib import Path
 import chess
 import chess.pgn
 
+from .stats import total_games
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,12 +21,18 @@ def extract_and_format_stats_comment(edge, is_white: bool, config=None) -> str:
     parts = []
 
     if edge.stats:
-        min_games = getattr(config, "min_lichess_games", 1000) if config else 1000
-        padding = getattr(config, "padding_strength", 0) if config else 0
+        padding_ratio = getattr(config, "padding_ratio", 0.02) if config else 0.02
+
+        if edge.parent and edge.parent.position_stats:
+            lichess_stats = edge.parent.position_stats.get("lichess")
+            parent_games = total_games(lichess_stats)
+        else:
+            parent_games = 0
+
+        padding = int(parent_games * padding_ratio)
 
         advantage = edge.stats.advantage(
             is_white,
-            min_games_threshold=min_games,
             padding_strength=padding,
         )
         parts.append(f"A:{advantage * 100:.1f}")

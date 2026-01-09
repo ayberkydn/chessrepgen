@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models.graph import RepertoireEdge, RepertoireNode
 
-from .stats import calculate_moves_weighted_advantage
+from .stats import calculate_moves_weighted_advantage, total_games
 from .stockfish_evaluator import StockfishEvaluator
 
 logger = logging.getLogger(__name__)
@@ -50,8 +50,9 @@ class RepertoirePruner:
         child_values: list[tuple[float, float]] = []
         total_weight = 0.0
 
-        min_games = getattr(self.config, "min_lichess_games", 1000)
-        padding = getattr(self.config, "padding_strength", 0)
+        padding_ratio = getattr(self.config, "padding_ratio", 0.02)
+        parent_games = total_games(node.position_stats.get("lichess") if node.position_stats else None)
+        padding = int(parent_games * padding_ratio)
 
         for edge in node.edges:
             advantage_value: float | None = None
@@ -75,7 +76,6 @@ class RepertoirePruner:
                 if advantage_value is None and edge.stats:
                     advantage_value = edge.stats.advantage(
                         self.is_white,
-                        min_games_threshold=min_games,
                         padding_strength=padding,
                     )
                     if child_node:
@@ -89,14 +89,12 @@ class RepertoirePruner:
                 if advantage_value is None and edge.stats:
                     advantage_value = edge.stats.advantage(
                         self.is_white,
-                        min_games_threshold=min_games,
                         padding_strength=padding,
                     )
 
             if advantage_value is None and edge.stats:
                 advantage_value = edge.stats.advantage(
                     self.is_white,
-                    min_games_threshold=min_games,
                     padding_strength=padding,
                 )
                 if child_node and child_node.terminal_advantage is None:

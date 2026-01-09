@@ -20,6 +20,7 @@ class Config:
     advantage_tolerance: float = 0.02
     # Method to aggregate move advantages when combining explorer data
     advantage_aggregation: str = "mean"
+    padding_ratio: float = 0.02  # Ratio of parent games to use for padding (0-1)
     min_lichess_games: int = 1000  # Minimum Lichess games to continue exploring
     output_file: str = "repertoire.pgn"
     cache_file: str = "chess_cache.db"
@@ -62,6 +63,9 @@ class Config:
 
         if not 0 <= self.advantage_tolerance <= 1:
             raise ValueError("advantage_tolerance must be between 0 and 1")
+
+        if not 0 <= self.padding_ratio <= 1:
+            raise ValueError("padding_ratio must be between 0 and 1")
 
         agg_method = str(getattr(self, "advantage_aggregation", "median")).lower()
         if agg_method not in {"mean", "median"}:
@@ -160,6 +164,12 @@ def parse_arguments() -> argparse.Namespace:
         "--advantage-aggregation",
         choices=["median", "mean"],
         help="Choose how move advantages are aggregated when evaluating positions",
+    )
+
+    parser.add_argument(
+        "--padding-ratio",
+        type=float,
+        help="Ratio of parent games to use for padding (0-1)",
     )
 
     parser.add_argument(

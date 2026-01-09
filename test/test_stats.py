@@ -15,7 +15,6 @@ def test_advantage_padding_shrinks_toward_balanced():
 
     advantage = stats.advantage(
         for_white=True,
-        min_games_threshold=50,
         padding_strength=90,
     )
 
@@ -23,7 +22,8 @@ def test_advantage_padding_shrinks_toward_balanced():
     assert pytest.approx(0.07) == advantage
 
 
-def test_advantage_padding_skips_when_sample_is_large():
+def test_advantage_padding_applied_to_all_samples():
+    """Verify padding is applied regardless of sample size."""
     stats = MoveStats(
         uci="d2d4",
         san="d4",
@@ -35,9 +35,29 @@ def test_advantage_padding_skips_when_sample_is_large():
 
     advantage = stats.advantage(
         for_white=True,
-        min_games_threshold=50,
-        padding_strength=90,
+        padding_strength=100,
     )
 
-    # Raw advantage is 0.6 - 0.2 = 0.4; no padding when total_games >= threshold.
+    # Raw advantage is 0.6 - 0.2 = 0.4
+    # weight = 100 / (100 + 100) = 0.5; 0.5 * 0.4 = 0.2
+    assert pytest.approx(0.2) == advantage
+
+
+def test_advantage_no_padding_when_zero():
+    """Verify no padding is applied when padding_strength is 0."""
+    stats = MoveStats(
+        uci="d2d4",
+        san="d4",
+        white_wins=60,
+        draws=20,
+        black_wins=20,
+        total_games=100,
+    )
+
+    advantage = stats.advantage(
+        for_white=True,
+        padding_strength=0,
+    )
+
+    # Raw advantage is 0.6 - 0.2 = 0.4; no padding when padding_strength is 0
     assert pytest.approx(0.4) == advantage

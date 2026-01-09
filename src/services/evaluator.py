@@ -4,6 +4,7 @@ import logging
 
 from models.evaluator import TerminationDecision
 from models.stats import MoveStats
+from .stats import total_games
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,9 @@ class MoveEvaluator:
             if not candidate_moves:
                 return []
 
-            min_games = getattr(self.config, "min_lichess_games", 1000)
-            padding = getattr(self.config, "padding_strength", 0)
+            padding_ratio = getattr(self.config, "padding_ratio", 0.02)
+            parent_games = total_games(lichess_stats)
+            padding = int(parent_games * padding_ratio)
 
             tolerance = getattr(self.config, "advantage_tolerance", 0.0)
             pop_threshold = self._player_popularity_threshold()
@@ -84,7 +86,6 @@ class MoveEvaluator:
                     (
                         m.advantage(
                             self.is_white,
-                            min_games_threshold=min_games,
                             padding_strength=padding,
                         )
                         for m in popular_moves
@@ -97,7 +98,6 @@ class MoveEvaluator:
                     (
                         m.advantage(
                             self.is_white,
-                            min_games_threshold=min_games,
                             padding_strength=padding,
                         )
                         for m in candidate_moves
@@ -112,7 +112,6 @@ class MoveEvaluator:
             for move_stats in candidate_moves:
                 advantage_value = move_stats.advantage(
                     self.is_white,
-                    min_games_threshold=min_games,
                     padding_strength=padding,
                 )
                 popularity = (
@@ -140,7 +139,6 @@ class MoveEvaluator:
                 key=lambda m: (
                     m.advantage(
                         self.is_white,
-                        min_games_threshold=min_games,
                         padding_strength=padding,
                     ),
                     m.total_games,
