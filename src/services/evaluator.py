@@ -4,6 +4,7 @@ import logging
 
 from models.evaluator import TerminationDecision
 from models.stats import MoveStats
+
 from .stats import total_games
 
 logger = logging.getLogger(__name__)
@@ -56,8 +57,13 @@ class MoveEvaluator:
             # For player moves: filter by advantage tolerance and popularity
             candidate_moves: list[MoveStats] = []
             total_games_at_pos = 0
+            min_lichess = getattr(self.config, "min_lichess_games", 1000)
+
             for move_data in lichess_stats["moves"]:
                 move_stats = self.parse_move_data(move_data)
+                # Filter out moves with fewer games than min_lichess_games
+                if move_stats.total_games < min_lichess:
+                    continue
                 candidate_moves.append(move_stats)
                 total_games_at_pos += move_stats.total_games
 
@@ -157,11 +163,15 @@ class MoveEvaluator:
             # Calculate total games from Lichess data only (for popularity calculation)
             lichess_total_for_popularity = 0
             lichess_moves = {}
+            min_lichess = getattr(self.config, "min_lichess_games", 1000)
 
             for move_data in lichess_stats["moves"]:
                 uci = move_data.get("uci", "")
                 if uci:
                     move_stats = self.parse_move_data(move_data)
+                    # Filter out moves with fewer games than min_lichess_games
+                    if move_stats.total_games < min_lichess:
+                        continue
                     lichess_moves[uci] = move_stats
                     lichess_total_for_popularity += move_stats.total_games
 

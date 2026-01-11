@@ -1,9 +1,9 @@
 initial_moves_white:
   - e4
-  - Nf3
-  - d4
-  - c4
-  - b4
+  # - Nf3
+  # - d4
+  # - c4
+  # - b4
 initial_moves_black:
   # - ""
 
@@ -29,7 +29,7 @@ advantage_aggregation: mean
 min_lichess_games: 1000
 
 # Ratio of parent games to use for padding (0-1, higher = more conservative)
-padding_ratio: 0.01
+padding_ratio: 0.1
 
 # Cache settings
 cache_file: lichess_cache.db
