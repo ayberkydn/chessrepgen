@@ -13,7 +13,7 @@ from .cache import ChessCache
 from .evaluator import MoveEvaluator
 from .lichess_client import LichessClient
 from .pruner import RepertoirePruner
-from .stats import total_games
+from .stats import calculate_padding, total_games
 
 logger = logging.getLogger(__name__)
 
@@ -211,12 +211,14 @@ class RepertoireBuilder:
             if api_data and api_data.get("lichess"):
                 lichess_stats = api_data["lichess"]
                 logger.debug("Successfully fetched and cached Lichess data")
-                self.cache.set_lichess_stats(
-                    fen,
-                    lichess_stats,
-                    self.config.ratings,
-                    self.config.time_control,
-                )
+                # Only cache if we have valid data
+                if lichess_stats is not None:
+                    self.cache.set_lichess_stats(
+                        fen,
+                        lichess_stats,
+                        self.config.ratings,
+                        self.config.time_control,
+                    )
 
         if lichess_stats_fetched_from_api:
             lichess_total = total_games(lichess_stats)
@@ -348,8 +350,9 @@ class RepertoireBuilder:
         # Log candidate moves being considered
         if candidate_moves:
             padding_ratio = getattr(self.config, "padding_ratio", 0.02)
+            static_padding = getattr(self.config, "static_padding", 0)
             parent_games = total_games(lichess_stats)
-            padding = int(parent_games * padding_ratio)
+            padding = calculate_padding(parent_games, padding_ratio, static_padding)
 
             moves_info = []
             for move in candidate_moves[:5]:  # Show top 5 moves
@@ -469,8 +472,11 @@ class RepertoireBuilder:
             side_label = "White" if self.is_white else "Black"
 
             padding_ratio = getattr(self.config, "padding_ratio", 0.02)
-            parent_games = total_games(node.position_stats.get("lichess") if node.position_stats else None)
-            padding = int(parent_games * padding_ratio)
+            static_padding = getattr(self.config, "static_padding", 0)
+            parent_games = total_games(
+                node.position_stats.get("lichess") if node.position_stats else None
+            )
+            padding = calculate_padding(parent_games, padding_ratio, static_padding)
 
             advantage = (
                 move_stats.advantage(

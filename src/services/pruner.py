@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models.graph import RepertoireEdge, RepertoireNode
 
-from .stats import calculate_moves_weighted_advantage, total_games
+from .stats import calculate_moves_weighted_advantage, calculate_padding, total_games
 from .stockfish_evaluator import StockfishEvaluator
 
 logger = logging.getLogger(__name__)
@@ -51,8 +51,11 @@ class RepertoirePruner:
         total_weight = 0.0
 
         padding_ratio = getattr(self.config, "padding_ratio", 0.02)
-        parent_games = total_games(node.position_stats.get("lichess") if node.position_stats else None)
-        padding = int(parent_games * padding_ratio)
+        static_padding = getattr(self.config, "static_padding", 0)
+        parent_games = total_games(
+            node.position_stats.get("lichess") if node.position_stats else None
+        )
+        padding = calculate_padding(parent_games, padding_ratio, static_padding)
 
         for edge in node.edges:
             advantage_value: float | None = None
@@ -270,9 +273,7 @@ class RepertoirePruner:
             if child and not edge.is_terminal:
                 self._prune_node(child, visited)
 
-    def evaluate_and_combine_terminal_scores(
-        self, roots: list[RepertoireNode]
-    ) -> None:
+    def evaluate_and_combine_terminal_scores(self, roots: list[RepertoireNode]) -> None:
         """
         Evaluate terminal nodes with Stockfish and combine with terminal_advantage.
 

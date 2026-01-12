@@ -68,6 +68,37 @@ def calculate_moves_weighted_advantage(
     return weighted_moves[-1][0]
 
 
+def calculate_padding(
+    parent_games: int,
+    padding_ratio: float = 0.0,
+    static_padding: int = 0,
+) -> int:
+    """Calculate padding strength using ratio-based and/or static padding.
+
+    Combines ratio-based padding (percentage of parent games) with a fixed
+    static padding value. When both are specified, they sum together for
+    maximum conservatism.
+
+    Args:
+        parent_games: Number of games in the parent position
+        padding_ratio: Ratio of parent games to use as padding (0-1)
+        static_padding: Fixed number of games to use as padding
+
+    Returns:
+        Total padding strength (sum of both methods)
+
+    Examples:
+        >>> calculate_padding(1000, 0.1, 50)  # 100 + 50 = 150
+        150
+        >>> calculate_padding(1000, 0.0, 100)  # 0 + 100 = 100 (static only)
+        100
+        >>> calculate_padding(1000, 0.05, 0)  # 50 + 0 = 50 (ratio only)
+        50
+    """
+    ratio_based = int(parent_games * padding_ratio)
+    return ratio_based + static_padding
+
+
 def total_games(stats: dict | None) -> int:
     if not stats:
         return 0

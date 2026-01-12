@@ -1,6 +1,6 @@
 initial_moves_white:
   - e4
-  # - Nf3
+  - d4
   # - d4
   # - c4
   # - b4
@@ -20,7 +20,7 @@ output_file: rep.pgn
 
 min_opponent_popularity: 0.01
 min_player_popularity: 0.001
-advantage_tolerance: 0.01
+advantage_tolerance: 0.012
 
 # How to aggregate outcomes when evaluating move advantages (median or mean)
 advantage_aggregation: mean
@@ -29,7 +29,10 @@ advantage_aggregation: mean
 min_lichess_games: 1000
 
 # Ratio of parent games to use for padding (0-1, higher = more conservative)
-padding_ratio: 0.1
+padding_ratio: 0.001
+
+# Fixed number of games for static padding (0 = disabled, higher = more conservative)
+static_padding: 100
 
 # Cache settings
 cache_file: lichess_cache.db

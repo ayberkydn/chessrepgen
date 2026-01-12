@@ -5,7 +5,7 @@ import logging
 from models.evaluator import TerminationDecision
 from models.stats import MoveStats
 
-from .stats import total_games
+from .stats import calculate_padding, total_games
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,9 @@ class MoveEvaluator:
                 return []
 
             padding_ratio = getattr(self.config, "padding_ratio", 0.02)
+            static_padding = getattr(self.config, "static_padding", 0)
             parent_games = total_games(lichess_stats)
-            padding = int(parent_games * padding_ratio)
+            padding = calculate_padding(parent_games, padding_ratio, static_padding)
 
             tolerance = getattr(self.config, "advantage_tolerance", 0.0)
             pop_threshold = self._player_popularity_threshold()

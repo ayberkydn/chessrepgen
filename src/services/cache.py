@@ -18,6 +18,36 @@ def normalize_fen(fen: str) -> str:
     return " ".join(parts[:4])
 
 
+def strip_unwanted_fields(data: dict) -> dict:
+    """Remove averageRating, performance, game, and opening fields from Lichess API response.
+    
+    These fields are not used by the application and increase cache size unnecessarily.
+    We only keep: uci, san, white, draws, black
+    """
+    if not isinstance(data, dict):
+        return data
+    
+    # Create a shallow copy to avoid modifying the original
+    cleaned_data = data.copy()
+    
+    # Strip unwanted fields from each move in the moves list
+    if "moves" in cleaned_data and isinstance(cleaned_data["moves"], list):
+        cleaned_moves = []
+        for move in cleaned_data["moves"]:
+            if isinstance(move, dict):
+                # Only keep the fields we actually use
+                cleaned_move = {
+                    k: v for k, v in move.items() 
+                    if k in ("uci", "san", "white", "draws", "black")
+                }
+                cleaned_moves.append(cleaned_move)
+            else:
+                cleaned_moves.append(move)
+        cleaned_data["moves"] = cleaned_moves
+    
+    return cleaned_data
+
+
 class ChessCache:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -83,13 +113,16 @@ class ChessCache:
         rating_key = ",".join(map(str, sorted(ratings)))
         time_control_str = ",".join(sorted(time_controls))
         normalized_fen = normalize_fen(fen)
+        
+        # Strip unwanted fields before caching
+        cleaned_data = strip_unwanted_fields(data)
 
         with self._get_connection() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO lichess_stats
                    (fen, rating_range, time_control, data)
                    VALUES (?, ?, ?, ?)""",
-                (normalized_fen, rating_key, time_control_str, json.dumps(data)),
+                (normalized_fen, rating_key, time_control_str, json.dumps(cleaned_data)),
             )
             conn.commit()
             logger.debug(f"Cached lichess stats for: {fen}")
